@@ -619,7 +619,10 @@ impl<'a> Runner<'a> {
             base.quality as i32
         };
         let mut last_encoded: i32 = start;
-        let mut last_score = self.encode_and_measure(src, temp, base, last_encoded)?;
+        let Some(mut last_score) = self.encode_and_measure(src, temp, base, last_encoded)? else {
+            // The metric cannot read this image; keep the fixed quality.
+            return Ok((last_encoded as u8, None));
+        };
         let mut best: Option<(i32, f64)> = None;
 
         if last_score >= floor {
@@ -629,7 +632,9 @@ impl<'a> Runner<'a> {
                 if next < 60 {
                     break;
                 }
-                let s = self.encode_and_measure(src, temp, base, next)?;
+                let Some(s) = self.encode_and_measure(src, temp, base, next)? else {
+                    break;
+                };
                 last_encoded = next;
                 last_score = s;
                 if s >= floor {
@@ -641,7 +646,9 @@ impl<'a> Runner<'a> {
         } else {
             let mut up = last_encoded + 3;
             while up <= 96 {
-                let s = self.encode_and_measure(src, temp, base, up)?;
+                let Some(s) = self.encode_and_measure(src, temp, base, up)? else {
+                    break;
+                };
                 last_encoded = up;
                 last_score = s;
                 if s >= floor {
@@ -668,13 +675,11 @@ impl<'a> Runner<'a> {
         temp: &Path,
         base: &JpegEncodeOpts,
         quality: i32,
-    ) -> Result<f64> {
+    ) -> Result<Option<f64>> {
         let mut opts = base.clone();
         opts.quality = quality.clamp(40, 96) as u8;
         engine::encode_jpeg(self.tools, src, temp, &opts)?;
-        let score = engine::ssimu2(self.tools, src, temp)?
-            .context("ssimulacra2 produced no score while quality_mode = target")?;
-        Ok(score)
+        engine::ssimu2(self.tools, src, temp)
     }
 
     fn settings_summary(&self, decision: &Decision, quality: Option<u8>) -> String {

@@ -432,15 +432,16 @@ fn search_quality(
     } else {
         base.quality as i32
     };
-    let measure = |q: i32| -> Result<(i32, f64)> {
+    let measure = |q: i32| -> Result<(i32, Option<f64>)> {
         let mut opts = base.clone();
         opts.quality = q.clamp(40, 96) as u8;
         engine::encode_jpeg(tools, src, dst, &opts)?;
-        let score = engine::ssimu2(tools, src, dst)?
-            .context("ssimulacra2 produced no score while quality_mode = target")?;
-        Ok((q, score))
+        Ok((q, engine::ssimu2(tools, src, dst)?))
     };
-    let (mut last_q, mut last_score) = measure(start)?;
+    let (mut last_q, first_opt) = measure(start)?;
+    let Some(mut last_score) = first_opt else {
+        return Ok((last_q as u8, None));
+    };
     let mut best: Option<(i32, f64)> = None;
     if last_score >= floor {
         best = Some((last_q, last_score));
@@ -449,7 +450,8 @@ fn search_quality(
             if next < 60 {
                 break;
             }
-            let (q, s) = measure(next)?;
+            let (q, opt) = measure(next)?;
+            let Some(s) = opt else { break };
             last_q = q;
             last_score = s;
             if s >= floor {
@@ -461,7 +463,8 @@ fn search_quality(
     } else {
         let mut up = last_q + 3;
         while up <= 96 {
-            let (q, s) = measure(up)?;
+            let (q, opt) = measure(up)?;
+            let Some(s) = opt else { break };
             last_q = q;
             last_score = s;
             if s >= floor {

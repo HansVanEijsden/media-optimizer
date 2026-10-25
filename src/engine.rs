@@ -368,8 +368,13 @@ pub fn ssimu2(tools: &Tools, orig: &Path, distorted: &Path) -> Result<Option<f64
         .output()
         .context("running ssimulacra2")?;
     if !output.status.success() {
+        // Some images cannot be measured at all: libjxl refuses when an embedded
+        // ICC profile contradicts the colour type, for example. That must not cost
+        // the file its optimisation, so the caller gets "no score" and falls back
+        // to the fixed quality.
         let stderr = String::from_utf8_lossy(&output.stderr);
-        bail!("ssimulacra2 failed: {}", stderr.trim());
+        warn_metric_failure_once(stderr.trim());
+        return Ok(None);
     }
     let text = String::from_utf8_lossy(&output.stdout);
     let score = text
@@ -432,6 +437,20 @@ pub fn verify_decodes(
         }
     }
     Ok((width, height))
+}
+
+/// Once per process, so a systemic failure is visible without one line per file.
+fn warn_metric_failure_once(detail: &str) {
+    use std::sync::atomic::{AtomicBool, Ordering};
+    static WARNED: AtomicBool = AtomicBool::new(false);
+    if !WARNED.swap(true, Ordering::Relaxed) {
+        tracing::warn!(
+            "ssimulacra2 could not measure an image ({detail}); files it cannot measure are \
+             encoded at the configured quality without a floor check"
+        );
+    } else {
+        tracing::debug!("ssimulacra2 could not measure an image: {detail}");
+    }
 }
 
 fn run(mut cmd: Command, what: &str) -> Result<()> {
