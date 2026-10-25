@@ -16,7 +16,9 @@
 //! The server keeps the manifest, so a normal nightly run picks up exactly where
 //! the remote pass stopped, and vice versa.
 
+use std::ffi::OsString;
 use std::io::{BufRead, BufReader, Write};
+use std::os::unix::ffi::{OsStrExt, OsStringExt};
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 
@@ -34,6 +36,26 @@ use crate::replace;
 use crate::run::extension_is_image;
 use crate::VERSION;
 
+/// Paths travel as base64 of their raw bytes.
+///
+/// A real media tree contains file names that are not valid UTF-8: an upload from
+/// a Windows client with a single 0xC2 byte in the name, for example. `display()`
+/// would replace that byte with U+FFFD, and the other side would then look for a
+/// file that does not exist. Base64 keeps the transfer a byte-for-byte copy and
+/// still survives tabs and newlines in a name.
+fn encode_path(path: &Path) -> String {
+    use base64::Engine;
+    base64::engine::general_purpose::STANDARD.encode(path.as_os_str().as_bytes())
+}
+
+fn decode_path(encoded: &str) -> Option<PathBuf> {
+    use base64::Engine;
+    let bytes = base64::engine::general_purpose::STANDARD
+        .decode(encoded.as_bytes())
+        .ok()?;
+    Some(PathBuf::from(OsString::from_vec(bytes)))
+}
+
 /// One file that needs work, as agreed between the server and the client.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Candidate {
@@ -50,7 +72,7 @@ impl Candidate {
             self.index,
             self.action,
             self.size,
-            self.path.display()
+            encode_path(&self.path)
         )
     }
 
@@ -59,7 +81,7 @@ impl Candidate {
         let index = parts.next()?.parse().ok()?;
         let action = parts.next()?.to_string();
         let size = parts.next()?.parse().ok()?;
-        let path = PathBuf::from(parts.next()?);
+        let path = decode_path(parts.next()?.trim())?;
         Some(Candidate {
             index,
             path,
@@ -98,7 +120,7 @@ impl StagedResult {
                 .unwrap_or_else(|| "-".to_string()),
             self.size_before,
             self.size_after,
-            self.path.display(),
+            encode_path(&self.path),
             self.note.replace('\t', " ")
         )
     }
@@ -116,7 +138,7 @@ impl StagedResult {
             ssimu2: fields[4].parse().ok(),
             size_before: fields[5].parse().ok()?,
             size_after: fields[6].parse().ok()?,
-            path: PathBuf::from(fields[7]),
+            path: decode_path(fields[7])?,
             note: fields[8].to_string(),
         })
     }
@@ -746,6 +768,41 @@ mod tests {
         };
         let parsed = Candidate::from_tsv(&c.to_tsv()).unwrap();
         assert_eq!(parsed, c, "paths with spaces must survive the round trip");
+    }
+
+    #[test]
+    fn paths_that_are_not_utf8_survive_the_round_trip() {
+        // A real tree contains these: a Windows upload with a single 0xC2 byte in
+        // the name. display() would turn it into U+FFFD and the client would then
+        // fetch a file that does not exist.
+        let raw: Vec<u8> = b"/home/example/www/190823-\xC2-geert-059.jpg".to_vec();
+        let path = PathBuf::from(OsString::from_vec(raw.clone()));
+        let c = Candidate {
+            index: 1,
+            path: path.clone(),
+            action: "jpeg_lossless".into(),
+            size: 10,
+        };
+        let parsed = Candidate::from_tsv(&c.to_tsv()).unwrap();
+        assert_eq!(
+            parsed.path.as_os_str().as_bytes(),
+            raw.as_slice(),
+            "the exact bytes must come back"
+        );
+    }
+
+    #[test]
+    fn tabs_and_newlines_in_names_survive() {
+        for name in ["a\tb.jpg", "a\nb.jpg", "a\\b.jpg"] {
+            let c = Candidate {
+                index: 2,
+                path: PathBuf::from(format!("/home/example/{name}")),
+                action: "jpeg_lossless".into(),
+                size: 1,
+            };
+            let parsed = Candidate::from_tsv(&c.to_tsv()).unwrap();
+            assert_eq!(parsed.path, c.path, "{name:?} must round-trip");
+        }
     }
 
     #[test]

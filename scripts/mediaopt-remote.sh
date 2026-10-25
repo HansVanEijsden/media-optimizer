@@ -162,10 +162,24 @@ while :; do
   t0=$(date +%s)
   # Download: tar keeps the tree, so the local copy lands at the same relative
   # path it has on the server and `encode-batch` can find it.
-  cut -f4 "$work/batch.tsv" | sed 's#^/##' > "$work/paths.txt"
+  # Column 4 is the base64 of the raw path bytes, so names that are not valid
+  # UTF-8 survive the trip. tar gets a NUL-separated list, which also survives
+  # tabs and newlines in a name.
+  cut -f4 "$work/batch.tsv" | python3 -c '
+import base64, sys
+out = sys.stdout.buffer
+for line in sys.stdin.buffer:
+    line = line.strip()
+    if line:
+        out.write(base64.b64decode(line).lstrip(b"/") + b"\0")
+' > "$work/paths.bin"
   rm -rf "$work/in" "$work/out"; mkdir -p "$work/in" "$work/out"
-  COPYFILE_DISABLE=1 ssh -o BatchMode=yes "$host" "tar -cf - -C / -T -" < "$work/paths.txt" \
-    | tar --no-xattrs -xf - -C "$work/in" 2>/dev/null
+  # --ignore-failed-read: a file deleted between the scan and the download is a
+  # normal race, not a reason to abandon the batch.
+  COPYFILE_DISABLE=1 ssh -o BatchMode=yes "$host" \
+      "tar --null --ignore-failed-read -cf - -C / -T -" < "$work/paths.bin" \
+    | tar --no-xattrs -xf - -C "$work/in" 2>/dev/null \
+    || say "  warning: the download was incomplete (a file vanished?); continuing"
 
   t1=$(date +%s)
   # Encode here.

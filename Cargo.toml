@@ -29,6 +29,7 @@ tracing-appender = "0.2"
 filetime = "0.2"
 chrono = { version = "0.4", default-features = false, features = ["clock", "std"] }
 flate2 = "1"
+base64 = "0.22"
 libc = "0.2"
 oxipng = { version = "10", default-features = false, features = ["zopfli", "parallel"] }
 
