@@ -36,6 +36,10 @@ jobs=10
 limit=0
 config=""
 binary="mediaopt"
+# The staging directory has to be reachable from both sides: inside the container
+# (where apply-staged runs) and on the host (where tar unpacks). It lives inside
+# the bind mount that is the state directory, so both stay on the same filesystem
+# as the media and the final rename stays atomic.
 stage_container="/var/lib/mediaopt/stage"
 container="mediaopt"
 image="mediaopt:0.1.0"
@@ -87,15 +91,28 @@ say() { printf '%s %s\n' "$(date +%H:%M:%S)" "$*" >&2; }
 # the config, the state directory and the media roots. Reusing them means this
 # script cannot drift from the deployed configuration.
 say "reading the container mounts on $host"
-mounts=$(ssh -o BatchMode=yes "$host" \
-  "docker inspect $container --format '{{range .Mounts}}-v {{.Source}}:{{.Destination}} {{end}}'")
-[ -n "$mounts" ] || { echo "could not read the mounts of $container on $host" >&2; exit 1; }
+mountpairs=$(ssh -o BatchMode=yes "$host" \
+  "docker inspect $container --format '{{range .Mounts}}{{.Destination}}={{.Source}} {{end}}'")
+[ -n "$mountpairs" ] || {
+  echo "could not read the mounts of $container on $host" >&2; exit 1; }
+
+mounts=""
+state_host=""
+for pair in $mountpairs; do
+  dest=${pair%%=*}
+  src=${pair#*=}
+  mounts="$mounts -v $src:$dest"
+  [ "$dest" = "/var/lib/mediaopt" ] && state_host=$src
+done
+[ -n "$state_host" ] || {
+  echo "could not find the state directory mount of $container on $host" >&2; exit 1; }
+stage_host="$state_host/stage"
 
 # Run a one-shot mediaopt command on the server, in the same sandbox.
 remote_mediaopt() {
   # shellcheck disable=SC2086
   ssh -o BatchMode=yes "$host" \
-    "docker run --rm --user 0:0 --cpus=1 --read-only --tmpfs /tmp:size=256m \
+    "docker run --rm -i --user 0:0 --cpus=1 --read-only --tmpfs /tmp:size=256m \
        --security-opt no-new-privileges:true --cap-drop ALL \
        --cap-add CHOWN --cap-add DAC_OVERRIDE --cap-add FOWNER \
        $mounts $image $*"
@@ -127,13 +144,15 @@ while :; do
   n=$(wc -l < "$work/batch.tsv" | tr -d ' ')
   say "batch $batch_no: $n file(s)"
 
+  t0=$(date +%s)
   # Download: tar keeps the tree, so the local copy lands at the same relative
   # path it has on the server and `encode-batch` can find it.
   cut -f4 "$work/batch.tsv" | sed 's#^/##' > "$work/paths.txt"
   rm -rf "$work/in" "$work/out"; mkdir -p "$work/in" "$work/out"
-  ssh -o BatchMode=yes "$host" "tar -cf - -C / -T -" < "$work/paths.txt" \
-    | tar -xf - -C "$work/in"
+  COPYFILE_DISABLE=1 ssh -o BatchMode=yes "$host" "tar -cf - -C / -T -" < "$work/paths.txt" \
+    | tar --no-xattrs -xf - -C "$work/in" 2>/dev/null
 
+  t1=$(date +%s)
   # Encode here.
   "$binary" --config "$config" encode-batch \
       --list "$work/batch.tsv" \
@@ -142,10 +161,13 @@ while :; do
       --result "$work/results.tsv" \
       --jobs "$jobs"
 
+  t2=$(date +%s)
+  say "  download $(( t1 - t0 ))s, encode $(( $(date +%s) - t2 ))s"
   # Upload the results and let the server verify and install them.
   if [ -n "$(ls -A "$work/out" 2>/dev/null)" ]; then
-    ssh -o BatchMode=yes "$host" "rm -rf $stage_container && mkdir -p $stage_container"
-    tar -cf - -C "$work/out" . | ssh -o BatchMode=yes "$host" "tar -xf - -C $stage_container"
+    ssh -o BatchMode=yes "$host" "rm -rf $stage_host && mkdir -p $stage_host"
+    COPYFILE_DISABLE=1 tar --no-xattrs -cf - -C "$work/out" . \
+      | ssh -o BatchMode=yes "$host" "tar -xf - -C $stage_host"
     remote_mediaopt "apply-staged --input $stage_container --result -" < "$work/results.tsv" \
       | sed 's/^/  /' >&2
   else

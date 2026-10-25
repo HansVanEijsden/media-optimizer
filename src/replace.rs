@@ -148,6 +148,29 @@ pub fn sync_parent(path: &Path) -> Result<()> {
     Ok(())
 }
 
+/// Install a file that lives somewhere else (a staging area, another mount).
+///
+/// `rename()` cannot cross a mount boundary: inside a container the staging
+/// directory and the media tree are separate bind mounts, and the kernel returns
+/// EXDEV even when both sit on the same disk. So the file is copied to a
+/// temporary name *beside the target* first, which is the same mount, and only
+/// then renamed into place.
+pub fn install_from(staged: &Path, target: &Path, meta: &FileMeta) -> Result<()> {
+    let temp = temp_path(target);
+    let result = (|| -> Result<()> {
+        std::fs::copy(staged, &temp)
+            .with_context(|| format!("copying {} to {}", staged.display(), temp.display()))?;
+        File::open(&temp)
+            .and_then(|f| f.sync_all())
+            .with_context(|| format!("fsync {}", temp.display()))?;
+        finish_replace(&temp, target, meta)
+    })();
+    if result.is_err() {
+        let _ = std::fs::remove_file(&temp);
+    }
+    result
+}
+
 /// Streaming SHA-256 of a file.
 pub fn sha256_file(path: &Path) -> Result<String> {
     let mut file = File::open(path).with_context(|| format!("opening {}", path.display()))?;
@@ -269,6 +292,34 @@ mod tests {
             file_hash,
             "2cf24dba5fb0a30e26e83b2ac5b9e29e1b161e5c1fa7425e73043362938b9824"
         );
+    }
+
+    #[test]
+    fn install_from_another_directory_keeps_metadata() {
+        let dir = tempfile::tempdir().unwrap();
+        let stage = tempfile::tempdir().unwrap();
+        let target = dir.path().join("photo.jpg");
+        std::fs::write(&target, b"original-with-a-longer-body").unwrap();
+        let mut perms = std::fs::metadata(&target).unwrap().permissions();
+        std::os::unix::fs::PermissionsExt::set_mode(&mut perms, 0o640);
+        std::fs::set_permissions(&target, perms).unwrap();
+        let meta = read_meta(&target).unwrap();
+
+        let staged = stage.path().join("7");
+        std::fs::write(&staged, b"smaller").unwrap();
+        install_from(&staged, &target, &meta).unwrap();
+
+        assert_eq!(std::fs::read(&target).unwrap(), b"smaller");
+        let after = std::fs::metadata(&target).unwrap();
+        assert_eq!(after.mode() & 0o777, 0o640);
+        assert_eq!(after.modified().unwrap(), meta.mtime);
+        // No temporary files left next to the target.
+        let leftovers: Vec<_> = std::fs::read_dir(dir.path())
+            .unwrap()
+            .flatten()
+            .filter(|e| is_temp_name(&e.file_name().to_string_lossy()))
+            .collect();
+        assert!(leftovers.is_empty());
     }
 
     #[test]

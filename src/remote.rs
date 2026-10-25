@@ -586,11 +586,12 @@ pub fn apply_staged(
             stats.rejected += 1;
             continue;
         }
-        if let Err(e) = replace::finish_replace(&staged, target, &meta) {
+        if let Err(e) = replace::install_from(&staged, target, &meta) {
             stats.errors += 1;
             tracing::warn!("{}: replace failed: {e:#}", target.display());
             continue;
         }
+        let _ = std::fs::remove_file(&staged);
         stats.changed += 1;
         stats.bytes_before += result.size_before;
         stats.bytes_after += staged_size;
