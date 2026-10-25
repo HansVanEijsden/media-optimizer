@@ -16,7 +16,7 @@ use chrono::Utc;
 use rusqlite::{params, Connection, OptionalExtension};
 use serde::{Deserialize, Serialize};
 
-pub const SCHEMA_VERSION: i64 = 3;
+pub const SCHEMA_VERSION: i64 = 4;
 
 /// How a file ended up.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
@@ -218,7 +218,10 @@ impl Manifest {
                 run_id            INTEGER,
                 ts                TEXT NOT NULL
             );
-            CREATE INDEX IF NOT EXISTS files_sha_before ON files(sha_before);
+            -- sha_before is no longer written (the input hash would cost a second
+            -- full read per file for a value nothing needs), so its index is dead
+            -- weight on a table that reaches a million rows.
+            DROP INDEX IF EXISTS files_sha_before;
             CREATE INDEX IF NOT EXISTS files_sha_after  ON files(sha_after);
             CREATE INDEX IF NOT EXISTS files_outcome    ON files(outcome);
             CREATE INDEX IF NOT EXISTS files_root       ON files(root);
@@ -352,7 +355,7 @@ impl Manifest {
         let row = self
             .conn
             .query_row(
-                "SELECT path FROM files WHERE sha_after = ?1 OR sha_before = ?1 LIMIT 1",
+                "SELECT path FROM files WHERE sha_after = ?1 LIMIT 1",
                 params![sha],
                 |r| r.get::<_, String>(0),
             )
@@ -778,6 +781,14 @@ impl Manifest {
 
     pub fn vacuum(&self) -> Result<()> {
         self.conn.execute_batch("VACUUM")?;
+        Ok(())
+    }
+
+    /// Housekeeping after a run: let SQLite refresh its statistics and give the
+    /// pages back. On a manifest that reaches a hundred megabytes this is worth a
+    /// second or two per run, and it keeps the file from fragmenting over months.
+    pub fn tidy(&self) -> Result<()> {
+        self.conn.execute_batch("PRAGMA optimize; VACUUM;")?;
         Ok(())
     }
 }

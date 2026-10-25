@@ -745,7 +745,10 @@ impl<'a> Runner<'a> {
         record.action = "skip".to_string();
         record.reason = Some(reason.as_str().to_string());
         record.outcome = Outcome::Skipped;
-        record.detail = Some(reason.label().to_string());
+        // No prose for a skip: there are two orders of magnitude more skips than
+        // changes, and the reason code already says everything.
+        record.detail = None;
+        record.settings = None;
         self.store(record)
     }
 
@@ -943,6 +946,11 @@ pub fn run(cfg: &Config, tools: &Tools, options: RunOptions, mode: &str) -> Resu
     let note = report.stopped.map(|s| format!("stopped early: {s}"));
     manifest.finish_run(run_id, &report.totals, note.as_deref())?;
     report.top_savings = manifest.changed_in_run(run_id).unwrap_or_default();
+    if !options.dry_run {
+        if let Err(e) = manifest.tidy() {
+            tracing::warn!("manifest tidy failed: {e:#}");
+        }
+    }
     Ok(report)
 }
 
