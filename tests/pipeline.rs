@@ -428,3 +428,49 @@ fn changing_the_config_re_evaluates_settled_files() {
         "a config change must trigger re-evaluation, not a silent skip"
     );
 }
+
+#[test]
+fn a_rejected_file_leaves_no_temporary_behind() {
+    let Some(engines) = engines() else { return };
+    let _serial = serial();
+    let dir = tempfile::tempdir().unwrap();
+    let root = dir.path().join("media/2024/05");
+    std::fs::create_dir_all(&root).unwrap();
+    let image = root.join("photo.jpg");
+    make_jpeg(&engines.vips, &image, 800, 600, 98);
+
+    // A margin no encode can meet guarantees a rejection rather than a change.
+    let config_path = write_config(dir.path(), dir.path().join("media").as_path(), "", &engines);
+    let text = std::fs::read_to_string(&config_path).unwrap();
+    std::fs::write(
+        &config_path,
+        text.replace("min_gain_percent = 2.0", "min_gain_percent = 99.0"),
+    )
+    .unwrap();
+    let cfg = load(&config_path, dir.path());
+    let tools = Tools::discover(&cfg.engine);
+
+    let report = run::run(&cfg, &tools, RunOptions { dry_run: false }, "test").unwrap();
+    assert!(
+        report.totals.files_rejected > 0,
+        "the run was supposed to reject the file, changed {}",
+        report.totals.files_changed
+    );
+
+    // The encoded output of a rejected file must not stay behind. Before this was
+    // fixed, tens of thousands of these filled the trees.
+    let mut leftovers = Vec::new();
+    for entry in walkdir::WalkDir::new(dir.path().join("media"))
+        .into_iter()
+        .flatten()
+    {
+        let name = entry.file_name().to_string_lossy().to_string();
+        if name.contains(".mediaopt.") && name.ends_with(".tmp") {
+            leftovers.push(entry.path().to_path_buf());
+        }
+    }
+    assert!(
+        leftovers.is_empty(),
+        "temporary files left behind: {leftovers:?}"
+    );
+}
