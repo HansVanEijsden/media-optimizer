@@ -123,9 +123,13 @@ pub struct PngConfig {
     /// discarded and the lossless path is used instead.
     #[serde(default = "d_png_quality_floor")]
     pub quality_floor: u8,
-    /// Only palette-quantise when the result is at least this much smaller.
+    /// Only palette-quantise when the result is at least this much smaller. This
+    /// path is lossy, so it uses the same kind of margin as a JPEG re-encode.
     #[serde(default = "d_min_gain_lossy")]
     pub min_gain_percent: f64,
+    /// Margin for the lossless PNG path. Quality-free, so any real win counts.
+    #[serde(default = "d_min_gain_lossless")]
+    pub min_gain_percent_lossless: f64,
     /// oxipng effort level for the lossless path (0-6; 2-4 is the sweet spot).
     #[serde(default = "d_oxipng_effort")]
     pub lossless_effort: u8,
@@ -359,7 +363,7 @@ impl Config {
         let mut text = String::with_capacity(256);
         let _ = write!(
             text,
-            "jpeg:{:?}:{}:{}:{}:{}:{}:{}:{}:{}:{:?}:{:?}|png:{:?}:{}:{}:{}|webp:{}|min:{}|root:{:?}:{:?}",
+            "jpeg:{:?}:{}:{}:{}:{}:{}:{}:{}:{}:{:?}:{:?}|png:{:?}:{}:{}:{}:{}|webp:{}|min:{}|root:{:?}:{:?}",
             j.quality_mode,
             j.ssimu2_floor,
             j.fixed_quality,
@@ -374,6 +378,7 @@ impl Config {
             self.png.mode,
             self.png.quality_floor,
             self.png.min_gain_percent,
+            self.png.min_gain_percent_lossless,
             self.png.lossless_effort,
             self.webp.lossless_only,
             self.limits.min_file_size,

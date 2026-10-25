@@ -32,6 +32,7 @@ must be absolute. The defaults below apply when a key is omitted.
 | `png.mode` | `"quant_if_safe"` | `skip`, `lossless` or `quant_if_safe` |
 | `png.quality_floor` | `80` | pngquant floor; below it the palette result is discarded and the lossless path is used |
 | `png.min_gain_percent` | `5.0` | palette result must be at least this much smaller |
+| `png.min_gain_percent_lossless` | `0.5` | lossless path: any real win is kept |
 | `png.lossless_effort` | `2` | oxipng preset, 0 to 6 |
 | `webp.lossless_only` | `true` | lossless WebP is considered, but the action is not implemented in 0.1.0 and is recorded as an error |
 

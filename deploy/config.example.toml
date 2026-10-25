@@ -84,10 +84,11 @@
 # discarded and the lossless path is used instead.
 # quality_floor = 80
 
-# Dithering amount for palette reduction (0.0-1.0).
-
 # Palette quantisation is only kept when it saves at least this percentage.
 # min_gain_percent = 5.0
+
+# The lossless PNG path costs no quality, so any real win is kept.
+# min_gain_percent_lossless = 0.5
 
 # oxipng effort (0-6; 2-4 is the sweet spot).
 # lossless_effort = 2

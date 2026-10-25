@@ -474,9 +474,13 @@ impl<'a> Runner<'a> {
         // Gain gate. Lossy results need the configured margin (an anomaly guard);
         // lossless results only need to be smaller at all, because they cost no
         // quality whatsoever.
+        // Two margins: a lossy result has to earn its quality loss, a lossless
+        // result only has to be smaller at all.
         let min_gain = match decision.action {
             Action::JpegReencode => self.cfg.jpeg.min_gain_percent,
+            Action::PngQuant => self.cfg.png.min_gain_percent,
             Action::JpegLossless => self.cfg.jpeg.min_gain_percent_lossless,
+            Action::PngLossless => self.cfg.png.min_gain_percent_lossless,
             _ => self.cfg.png.min_gain_percent,
         };
         if size_after >= size_before {
