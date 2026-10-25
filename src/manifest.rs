@@ -16,7 +16,7 @@ use chrono::Utc;
 use rusqlite::{params, Connection, OptionalExtension};
 use serde::{Deserialize, Serialize};
 
-pub const SCHEMA_VERSION: i64 = 4;
+pub const SCHEMA_VERSION: i64 = 5;
 
 /// How a file ended up.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
@@ -221,10 +221,13 @@ impl Manifest {
             -- sha_before is no longer written (the input hash would cost a second
             -- full read per file for a value nothing needs), so its index is dead
             -- weight on a table that reaches a million rows.
+            -- Only the primary key is indexed. The other indexes existed for
+            -- report queries that run once in a while and can afford a scan, and
+            -- together they were a third of the file on a six-figure row count.
             DROP INDEX IF EXISTS files_sha_before;
-            CREATE INDEX IF NOT EXISTS files_sha_after  ON files(sha_after);
-            CREATE INDEX IF NOT EXISTS files_outcome    ON files(outcome);
-            CREATE INDEX IF NOT EXISTS files_root       ON files(root);
+            DROP INDEX IF EXISTS files_sha_after;
+            DROP INDEX IF EXISTS files_outcome;
+            DROP INDEX IF EXISTS files_root;
             "#,
         )?;
         self.set_meta("schema_version", &SCHEMA_VERSION.to_string())?;
