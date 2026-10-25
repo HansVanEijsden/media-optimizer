@@ -1,0 +1,196 @@
+# =============================================================================
+# mediaopt configuration - reference example.
+#
+# Every key that src/config.rs understands is listed here, in the same order as
+# the structs. The value shown on each commented line is the built-in default,
+# so uncommenting a line changes nothing; edit the ones you need. Unknown keys
+# are rejected (`deny_unknown_fields`), so a typo fails at startup instead of
+# being ignored.
+#
+# This file is valid as-is and is what the deployment documentation points at:
+# `mediaopt --config deploy/config.example.toml tools` parses and validates it.
+# The /home/example/... paths are placeholders, not host paths.
+#
+# Where it goes:
+#   * host install   /etc/mediaopt/config.toml      (deploy/mediaopt.service)
+#   * container      /etc/mediaopt/config.toml      (MEDIAOPT_CONFIG, compose)
+# Keep the real file outside the repository: it carries site-specific paths and
+# owners that do not belong in git.
+#
+# Engine binaries are NOT configured here by default. `mediaopt tools`
+# discovers vips, jpegtran, pngquant and ssimulacra2 from PATH, or from the
+# VIPS_BIN / JPEGTRAN_BIN / PNGQUANT_BIN / SSIMULACRA2_BIN environment
+# variables; set the [engine] keys only when a binary lives somewhere unusual.
+# In the container all four are on PATH already.
+# =============================================================================
+
+# =============================================================================
+# [jpeg]
+# =============================================================================
+
+[jpeg]
+# How the encoder picks quality.
+#   "target" = binary-search the lowest quality that still meets ssimu2_floor
+#              (slower, never below the floor, never wastes bytes)
+#   "fixed"  = one encode at fixed_quality (fast and predictable)
+# quality_mode = "target"
+
+# SSIMULACRA2 floor for "target" mode, 60-100. 75 is "high quality" on the
+# published scale; 78-80 is conservative.
+# ssimu2_floor = 75.0
+
+# Quality for "fixed" mode, 1-100.
+# fixed_quality = 85
+
+# Only re-encode lossily when the source's stored quality is at least this.
+# Guarantees our own q85 output is never re-encoded a second time.
+# reencode_min_quality = 86
+
+# Longest side after downscaling; 0 disables resizing.
+# max_dimension = 2048
+
+# libvips downscale kernel. "cubic" is Catmull-Rom and measured 4.1% smaller
+# than lanczos3 with no ringing.
+# resize_kernel = "cubic"
+
+# A lossy re-encode is only kept when it saves at least this percentage.
+# min_gain_percent = 5.0
+
+# Run `jpegtran -optimize -progressive` on JPEGs that are not re-encoded.
+# lossless_pass = true
+
+# Minimum gain for the lossless pass; any real win counts.
+# min_gain_percent_lossless = 0.5
+
+# Chroma subsampling: "auto" keeps 4:4:4 sources 4:4:4 and uses 4:2:0 for the
+# rest; "on" always uses 4:2:0; "off" always uses 4:4:4.
+# subsample = "auto"
+
+# Metadata segments to keep. ICC + EXIF is the safe minimum.
+# keep = ["icc", "exif"]
+
+# =============================================================================
+# [png]
+# =============================================================================
+
+[png]
+# "skip"          = never touch PNG files
+# "lossless"      = oxipng only (measured 0.0-3% on already-optimised files)
+# "quant_if_safe" = palette-quantise when libimagequant meets quality_floor,
+#                   otherwise fall back to lossless
+# mode = "quant_if_safe"
+
+# libimagequant quality floor (0-100). Below this the palette result is
+# discarded and the lossless path is used instead.
+# quality_floor = 80
+
+# Dithering amount for palette reduction (0.0-1.0).
+# dither = 1.0
+
+# Palette quantisation is only kept when it saves at least this percentage.
+# min_gain_percent = 5.0
+
+# oxipng effort (0-6; 2-4 is the sweet spot).
+# lossless_effort = 2
+
+# =============================================================================
+# [webp]
+# =============================================================================
+
+[webp]
+# Only re-pack lossless WebP files. Lossy WebP is never re-encoded: a second
+# lossy generation can only make it worse.
+# lossless_only = true
+
+# =============================================================================
+# [limits]
+# =============================================================================
+
+[limits]
+# Worker threads. Default is min(number of CPUs, 2); the tool also sets nice 19
+# and idle I/O class on itself.
+# jobs = 2
+
+# Hard stop after this long; the file in flight is finished and the run exits.
+# max_runtime = "5h"
+
+# Files modified more recently than this are skipped (upload in progress).
+# min_file_age = "30m"
+
+# Refuse to start below this much free space on the target filesystem.
+# free_space_reserve = "2GiB"
+
+# Files smaller than this are never considered (savings would be noise).
+# min_file_size = 5120
+
+# Byte budget for one run; 0 = unlimited.
+# max_bytes_per_run = 0
+
+# File budget for one run; 0 = unlimited.
+# max_files_per_run = 0
+
+# Order files oldest-first so each night builds on the previous one.
+# oldest_first = true
+
+# =============================================================================
+# [state]
+# =============================================================================
+
+[state]
+# SQLite manifest. Never put this inside a media tree: those get served and
+# backed up.
+# db = "/var/lib/mediaopt/state.db"
+
+# Directory for the per-run JSON reports.
+# report_dir = "/var/lib/mediaopt/reports"
+
+# Optional log file. The container and the systemd unit log to stdout/journal,
+# so this is left unset unless you run the binary directly. When set, the file
+# is rotated daily by the process itself (tracing-appender).
+# log_file = "/var/log/mediaopt/mediaopt.log"
+
+# Days of JSON reports to keep.
+# report_days = 90
+
+# =============================================================================
+# [engine]
+#
+# Empty by default: discovery goes explicit config -> $*_BIN env var -> PATH.
+# =============================================================================
+
+[engine]
+# vips = "/usr/local/bin/vips"
+# jpegtran = "/usr/local/bin/jpegtran"
+# pngquant = "/usr/local/bin/pngquant"
+# ssimulacra2 = "/usr/local/bin/ssimulacra2"
+
+# =============================================================================
+# [[roots]] - one entry per media tree.
+#
+# `path` is the only key without a default and must be an absolute path.
+# `enabled` defaults to false, so a freshly added root stays off until you
+# switch it on. Roots may make the global settings more conservative (via
+# policy = "lossless_only"), never more aggressive.
+#
+# In a container, these paths are the paths *inside* the container, i.e. the
+# targets of the bind mounts (see deploy/compose.example.yaml).
+# =============================================================================
+
+[[roots]]
+path = "/home/example/www/static/img"
+enabled = true
+# owner = "example:example"        # optional user:group applied to replaced files
+# policy = "optimise"              # optimise | lossless_only
+# keep = ["icc", "exif"]           # only used for lossless_only roots
+# managed_by_remote = false        # true = `mediaopt remote` owns it; skip locally
+# max_bytes_per_run = 0            # per-root override; absent = global budget
+# max_files_per_run = 0
+# exclude = ["/thumbs/", "/cache/"]
+
+# A second, lossless-only root for hand-finished photography:
+#
+# [[roots]]
+# path = "/home/example/private/photos"
+# enabled = true
+# policy = "lossless_only"
+# keep = ["icc", "exif"]

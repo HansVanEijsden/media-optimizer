@@ -1,0 +1,24 @@
+# Rust build output.
+target/
+
+# mediaopt's own state: the SQLite manifest and its WAL side files. Never
+# commit real state; it contains absolute paths from whichever host ran last.
+*.db
+*.db-wal
+*.db-shm
+
+# Runtime lock files (run.lock and friends).
+*.lock
+# ...but Cargo.lock is an input, not a runtime lock file: the release image is
+# built with `cargo build --locked`, so it must stay in the repository.
+!Cargo.lock
+
+# Per-host configuration with real paths and owners. The committed template is
+# deploy/config.example.toml.
+local-config.toml
+
+# macOS
+.DS_Store
+
+# Scratch space used while measuring and debugging.
+/tmp/

@@ -1,0 +1,30 @@
+# Build context for deploy/Dockerfile.
+#
+# The image is built from Cargo.toml, Cargo.lock and src/ only. Everything else
+# is documentation, deployment scaffolding, local state or build output and
+# would only make the context bigger (and docker build slower).
+#
+# Keep Cargo.lock in the context: the image is built with `cargo build
+# --release --locked`, so the lock file is part of the build inputs.
+target/
+.git/
+.gitignore
+.github/
+deploy/
+docs/
+tests/
+scripts/
+README.md
+
+# The MIT and Apache texts are copied into the image so a pulled image carries
+# its own licenses; keep them in the build context.
+
+# Local state and editor noise (also in .gitignore).
+*.db
+*.db-wal
+*.db-shm
+*.lock
+!Cargo.lock
+local-config.toml
+.DS_Store
+/tmp/

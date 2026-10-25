@@ -1,0 +1,378 @@
+//! End-to-end tests that use the real encoders.
+//!
+//! They skip themselves when the engine binaries are not installed, so `cargo
+//! test` stays green on a bare CI runner while still exercising the whole
+//! pipeline on a machine (or container) that has libvips.
+
+use std::path::{Path, PathBuf};
+use std::process::Command;
+use std::time::Duration;
+
+use mediaopt::config::Config;
+use mediaopt::engine::Tools;
+use mediaopt::manifest::Manifest;
+use mediaopt::run::{self, RunOptions};
+
+/// These tests drive the real encoders and share rayon's global pool, so run one
+/// at a time inside the test binary regardless of --test-threads.
+static SERIAL: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
+fn serial() -> std::sync::MutexGuard<'static, ()> {
+    SERIAL.lock().unwrap_or_else(|e| e.into_inner())
+}
+
+fn tool(name: &str, env: &str) -> Option<PathBuf> {
+    if let Some(p) = std::env::var_os(env) {
+        let p = PathBuf::from(p);
+        if p.is_file() {
+            return Some(p);
+        }
+    }
+    let path = std::env::var_os("PATH")?;
+    for dir in std::env::split_paths(&path) {
+        let candidate = dir.join(name);
+        if candidate.is_file() {
+            return Some(candidate);
+        }
+    }
+    None
+}
+
+struct Engines {
+    vips: PathBuf,
+    jpegtran: Option<PathBuf>,
+}
+
+fn engines() -> Option<Engines> {
+    let vips = tool("vips", "VIPS_BIN")?;
+    // A binary that exists but cannot run is worse than none: probe it.
+    let works = Command::new(&vips)
+        .arg("--version")
+        .output()
+        .map(|o| o.status.success())
+        .unwrap_or(false);
+    if !works {
+        eprintln!("skipping: vips at {} does not run", vips.display());
+        return None;
+    }
+    Some(Engines {
+        vips,
+        jpegtran: tool("jpegtran", "JPEGTRAN_BIN"),
+    })
+}
+
+/// Make a high-quality JPEG of a colour chart. A chart, not noise: random noise
+/// is the pathological case for any perceptual metric and would be (correctly)
+/// rejected by the quality floor, which is not what these tests are about.
+fn make_jpeg(vips: &Path, path: &Path, width: u32, height: u32, quality: u32) {
+    let source = path.with_extension("v");
+    let status = Command::new(vips)
+        .arg("xyz")
+        .arg(&source)
+        .arg(width.to_string())
+        .arg(height.to_string())
+        .status()
+        .expect("vips xyz");
+    assert!(status.success(), "could not generate a test image");
+    let status = Command::new(vips)
+        .arg("jpegsave")
+        .arg(&source)
+        .arg(path)
+        .arg("--Q")
+        .arg(quality.to_string())
+        .arg("--keep")
+        .arg("all")
+        .status()
+        .expect("vips jpegsave");
+    assert!(status.success(), "could not write the test JPEG");
+    let _ = std::fs::remove_file(&source);
+}
+
+fn write_config(dir: &Path, root: &Path, extra: &str, engines: &Engines) -> PathBuf {
+    let config_path = dir.join("config.toml");
+    let mut text = format!(
+        r#"
+[jpeg]
+quality_mode = "fixed"
+fixed_quality = 82
+ssimu2_floor = 60.0
+reencode_min_quality = 86
+max_dimension = 2048
+min_gain_percent = 2.0
+lossless_pass = true
+min_gain_percent_lossless = 0.5
+
+[png]
+mode = "lossless"
+lossless_effort = 1
+
+[limits]
+jobs = 2
+max_runtime = "60s"
+min_file_age = "0s"
+free_space_reserve = "1MiB"
+min_file_size = 1024
+{extra}
+
+[state]
+db = "{}"
+report_dir = "{}"
+
+[engine]
+vips = "{}"
+"#,
+        dir.join("state.db").display(),
+        dir.join("reports").display(),
+        engines.vips.display()
+    );
+    if let Some(jpegtran) = &engines.jpegtran {
+        text.push_str(&format!("jpegtran = \"{}\"\n", jpegtran.display()));
+    }
+    text.push_str(&format!(
+        "\n[[roots]]\npath = \"{}\"\nenabled = true\n",
+        root.display()
+    ));
+    std::fs::write(&config_path, text).expect("write config");
+    config_path
+}
+
+fn load(config_path: &Path, dir: &Path) -> Config {
+    let mut cfg = Config::load(config_path).expect("config must load");
+    // Keep the manifest and reports inside the test directory.
+    cfg.state.db = dir.join("state.db");
+    cfg.state.report_dir = dir.join("reports");
+    cfg
+}
+
+fn stat_parts(path: &Path) -> (u64, u64, i64) {
+    use std::os::unix::fs::MetadataExt;
+    let md = std::fs::metadata(path).expect("stat");
+    (md.len(), md.mode() as u64 & 0o777, md.mtime())
+}
+
+#[test]
+fn reencodes_high_quality_jpeg_and_is_idempotent() {
+    let _serial = serial();
+    let Some(engines) = engines() else { return };
+    let dir = tempfile::tempdir().unwrap();
+    let root = dir.path().join("media");
+    std::fs::create_dir_all(&root).unwrap();
+    let image = root.join("photo.jpg");
+    make_jpeg(&engines.vips, &image, 900, 600, 98);
+    let original_size = std::fs::metadata(&image).unwrap().len();
+    let (_, original_mode, original_mtime) = stat_parts(&image);
+
+    let config_path = write_config(dir.path(), &root, "", &engines);
+    let cfg = load(&config_path, dir.path());
+    let tools = Tools::discover(&cfg.engine);
+
+    let first = run::run(&cfg, &tools, RunOptions { dry_run: false }, "test").unwrap();
+    assert_eq!(
+        first.totals.files_changed, 1,
+        "the q98 JPEG must be re-encoded"
+    );
+    assert!(first.totals.bytes_saved() > 0);
+    assert_eq!(first.totals.errors, 0);
+
+    let (new_size, new_mode, new_mtime) = stat_parts(&image);
+    assert!(new_size < original_size, "output must be smaller");
+    assert_eq!(new_mode, original_mode, "permissions must be preserved");
+    assert_eq!(new_mtime, original_mtime, "mtime must be preserved");
+
+    // The output must still decode at the original dimensions.
+    let header = mediaopt::engine::header_field(&tools, &image, "width").unwrap();
+    assert_eq!(header.as_deref(), Some("900"));
+
+    // ... and carry our marker so a lost manifest is recoverable.
+    let probed = mediaopt::probe::probe(&image).unwrap();
+    let info = probed.jpeg.expect("still a JPEG");
+    assert!(
+        info.has_tool_marker(),
+        "output must carry the mediaopt marker"
+    );
+
+    // Second and third run: nothing to do.
+    let second = run::run(&cfg, &tools, RunOptions { dry_run: false }, "test").unwrap();
+    assert_eq!(
+        second.totals.files_changed, 0,
+        "the second run must be a no-op"
+    );
+    let third = run::run(&cfg, &tools, RunOptions { dry_run: false }, "test").unwrap();
+    assert_eq!(
+        third.totals.files_changed, 0,
+        "the third run must be a no-op"
+    );
+}
+
+#[test]
+fn dry_run_writes_nothing() {
+    let _serial = serial();
+    let Some(engines) = engines() else { return };
+    let dir = tempfile::tempdir().unwrap();
+    let root = dir.path().join("media");
+    std::fs::create_dir_all(&root).unwrap();
+    let image = root.join("photo.jpg");
+    make_jpeg(&engines.vips, &image, 700, 500, 97);
+    let before = std::fs::read(&image).unwrap();
+    let (size_before, _, mtime_before) = stat_parts(&image);
+
+    let config_path = write_config(dir.path(), &root, "", &engines);
+    let cfg = load(&config_path, dir.path());
+    let tools = Tools::discover(&cfg.engine);
+
+    let report = run::run(&cfg, &tools, RunOptions { dry_run: true }, "dry-run").unwrap();
+    assert!(report.dry_run);
+    assert_eq!(report.totals.files_changed, 0);
+    assert_eq!(
+        report.per_root[0].planned_change, 1,
+        "the projection must see the work"
+    );
+    assert!(
+        report.per_root[0].planned_bytes_before > report.per_root[0].planned_bytes_after,
+        "the projection must estimate a saving"
+    );
+
+    let after = std::fs::read(&image).unwrap();
+    assert_eq!(before, after, "a dry run must not modify the file");
+    let (size_after, _, mtime_after) = stat_parts(&image);
+    assert_eq!(size_before, size_after);
+    assert_eq!(mtime_before, mtime_after);
+    // No manifest rows: a dry run must not poison the fast path either.
+    let manifest = Manifest::open(&dir.path().join("state.db")).unwrap();
+    assert_eq!(manifest.count_files().unwrap(), 0);
+}
+
+#[test]
+fn budget_stops_the_run_early() {
+    let _serial = serial();
+    let Some(engines) = engines() else { return };
+    let dir = tempfile::tempdir().unwrap();
+    let root = dir.path().join("media");
+    std::fs::create_dir_all(&root).unwrap();
+    for i in 0..4 {
+        make_jpeg(
+            &engines.vips,
+            &root.join(format!("photo{i}.jpg")),
+            500,
+            400,
+            98,
+        );
+    }
+    let config_path = write_config(dir.path(), &root, "max_files_per_run = 2", &engines);
+    let cfg = load(&config_path, dir.path());
+    let tools = Tools::discover(&cfg.engine);
+
+    let report = run::run(&cfg, &tools, RunOptions { dry_run: false }, "test").unwrap();
+    assert_eq!(
+        report.stopped,
+        Some("max_files_per_run"),
+        "the budget must stop the run"
+    );
+    assert!(
+        report.totals.files_changed <= 2,
+        "the budget must bound the work, changed {}",
+        report.totals.files_changed
+    );
+    let attempted = report.totals.files_changed + report.totals.files_rejected;
+    assert_eq!(
+        attempted, 2,
+        "exactly the budgeted number of files is encoded"
+    );
+}
+
+#[test]
+fn lossless_only_root_never_degrades_quality() {
+    let _serial = serial();
+    let Some(engines) = engines() else { return };
+    let Some(_) = &engines.jpegtran else {
+        eprintln!("skipping: jpegtran not available");
+        return;
+    };
+    let dir = tempfile::tempdir().unwrap();
+    let root = dir.path().join("photos");
+    std::fs::create_dir_all(&root).unwrap();
+    let image = root.join("keepsake.jpg");
+    make_jpeg(&engines.vips, &image, 600, 400, 96);
+
+    let config_path = dir.path().join("config.toml");
+    let text = format!(
+        r#"
+[jpeg]
+quality_mode = "fixed"
+fixed_quality = 70
+ssimu2_floor = 60.0
+reencode_min_quality = 0
+max_dimension = 0
+lossless_pass = true
+
+[limits]
+min_file_age = "0s"
+min_file_size = 1024
+
+[state]
+db = "{}"
+report_dir = "{}"
+
+[engine]
+vips = "{}"
+jpegtran = "{}"
+
+[[roots]]
+path = "{}"
+enabled = true
+policy = "lossless_only"
+"#,
+        dir.path().join("state.db").display(),
+        dir.path().join("reports").display(),
+        engines.vips.display(),
+        engines.jpegtran.as_ref().unwrap().display(),
+        root.display()
+    );
+    std::fs::write(&config_path, text).unwrap();
+    let cfg = load(&config_path, dir.path());
+    let tools = Tools::discover(&cfg.engine);
+
+    let report = run::run(&cfg, &tools, RunOptions { dry_run: false }, "test").unwrap();
+    assert_eq!(report.totals.errors, 0);
+    // Whatever happened, the stored quality must not have dropped to the
+    // configured fixed_quality of 70.
+    let probed = mediaopt::probe::probe(&image).unwrap();
+    let info = probed.jpeg.expect("still a JPEG");
+    assert!(
+        info.quality >= 90,
+        "a lossless_only root must never re-encode, stored quality is now {}",
+        info.quality
+    );
+}
+
+#[test]
+fn manifest_records_survive_a_new_inode_and_mtime() {
+    let _serial = serial();
+    let Some(engines) = engines() else { return };
+    let dir = tempfile::tempdir().unwrap();
+    let root = dir.path().join("media");
+    std::fs::create_dir_all(&root).unwrap();
+    let image = root.join("photo.jpg");
+    make_jpeg(&engines.vips, &image, 640, 480, 98);
+
+    let config_path = write_config(dir.path(), &root, "", &engines);
+    let cfg = load(&config_path, dir.path());
+    let tools = Tools::discover(&cfg.engine);
+    run::run(&cfg, &tools, RunOptions { dry_run: false }, "test").unwrap();
+    let changed = run::run(&cfg, &tools, RunOptions { dry_run: false }, "test").unwrap();
+    assert_eq!(changed.totals.files_changed, 0);
+
+    // Simulate a restore onto new hardware: same bytes, new inode, new mtime.
+    let copy = root.join("photo.restored.jpg");
+    std::fs::copy(&image, &copy).unwrap();
+    std::fs::remove_file(&image).unwrap();
+    std::fs::rename(&copy, &image).unwrap();
+    std::thread::sleep(Duration::from_millis(1100));
+    filetime::set_file_mtime(&image, filetime::FileTime::now()).unwrap();
+
+    let after_restore = run::run(&cfg, &tools, RunOptions { dry_run: false }, "test").unwrap();
+    assert_eq!(
+        after_restore.totals.files_changed, 0,
+        "a restored file with our marker must be recognised without the manifest"
+    );
+}

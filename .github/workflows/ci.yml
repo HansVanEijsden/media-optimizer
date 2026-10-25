@@ -1,0 +1,128 @@
+name: CI
+
+# Formatting, lints and tests on a Linux and a macOS runner, plus the two
+# repository-hygiene checks (gitleaks and the local hostname/secret scan) and a
+# Docker build so the deployment image cannot silently rot.
+#
+# Note on the tests: the integration tests that need the real engine binaries
+# skip themselves when `vips` is not on PATH, and these runners do not install
+# libvips/mozjpeg/pngquant/ssimulacra2. The unit tests therefore have to carry
+# the suite here; the image is exercised separately by the `docker` job.
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  test:
+    name: test (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest]
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt, clippy
+
+      - name: Cache cargo
+        uses: Swatinem/rust-cache@v2
+
+      - name: cargo fmt --check
+        run: cargo fmt --check
+
+      - name: cargo clippy
+        run: cargo clippy --all-targets -- -D warnings
+
+      - name: cargo test
+        # Integration tests self-skip without the engine binaries; a failure
+        # here means a unit test failed, not a missing vips.
+        run: cargo test
+
+  gitleaks:
+    name: gitleaks
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          # Full history: gitleaks scans commits, not just the working tree.
+          fetch-depth: 0
+
+      - name: gitleaks
+        uses: gitleaks/gitleaks-action@v2
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+  no-secrets:
+    name: no private hostnames or secrets
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      # The script is committed executable, but a fresh checkout on a
+      # filesystem that loses the bit should still be able to run it.
+      - name: check tracked files for private infrastructure
+        run: |
+          chmod +x scripts/check-no-secrets.sh
+          ./scripts/check-no-secrets.sh
+
+  docker:
+    name: docker image (linux/amd64, no push)
+    runs-on: ubuntu-latest
+    # The image compiles mozjpeg and libvips from source; this is not a
+    # five-minute job. Cached layers make subsequent runs much faster.
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Build (amd64, no push)
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: deploy/Dockerfile
+          platforms: linux/amd64
+          push: false
+          load: true
+          tags: mediaopt:ci
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+      - name: Smoke test the image
+        run: |
+          set -eux
+          # 1. The image must actually have a JPEG-capable libvips ...
+          docker run --rm --entrypoint /usr/local/bin/vips mediaopt:ci --vips-config \
+            | tee /tmp/vips-config.txt
+          grep -i 'JPEG load/save' /tmp/vips-config.txt | grep -q 'true'
+          grep -i 'image quantisation' /tmp/vips-config.txt | grep -q 'true'
+          # 2. ... linked against mozjpeg, not the distro's libjpeg-turbo.
+          docker run --rm --entrypoint sh mediaopt:ci \
+            -c "ldd \$(command -v vips) | grep -i jpeg | grep -q /usr/local/lib/libjpeg"
+          # 3. The example config must parse in the real image.
+          docker run --rm \
+            -v "$PWD/deploy/config.example.toml:/etc/mediaopt/config.toml:ro" \
+            mediaopt:ci tools
+          # 4. The binary itself starts with the engine libraries present.
+          docker run --rm --entrypoint /usr/local/bin/mediaopt mediaopt:ci --version
+          # 5. Size budget. The final stage is squashed to a single layer, so on
+          #    a Linux engine .Size is the uncompressed layer (~111 MB) and not
+          #    the Docker-Desktop "compressed + unpacked" figure. If this fails,
+          #    something added more than a few MB: measure before bumping it.
+          size=$(docker image inspect mediaopt:ci --format '{{.Size}}')
+          echo "image size: ${size} bytes ($((size / 1000000)) MB)"
+          test "$size" -lt 120000000

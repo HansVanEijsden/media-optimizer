@@ -1,0 +1,119 @@
+# =============================================================================
+# mediaopt - long-lived scheduler container (example)
+#
+# This file is a *template*. The real media roots, the state directory and the
+# configuration all live OUTSIDE the repository, on the host, and are supplied
+# through the ${...} placeholders below (environment or a .env file next to
+# this compose file). Nothing here points into the git checkout.
+#
+# Deployed layout used by the example:
+#
+#   /srv/mediaopt/compose.yaml        this file
+#   /srv/mediaopt/config.toml         copy of deploy/config.example.toml, edited
+#   /srv/mediaopt/.env                the ${...} values, mode 0600
+#   /srv/mediaopt/state/              SQLite manifest + JSON reports
+#   /srv/<site>/...                   the media trees themselves
+#
+# Example .env (NEVER commit this file):
+#
+#   MEDIAOPT_IMAGE=ghcr.io/hansvaneijsden/media-optimizer:latest
+#   MEDIAOPT_CONFIG_FILE=/srv/mediaopt/config.toml
+#   MEDIAOPT_STATE_DIR=/srv/mediaopt/state
+#   MEDIA_ROOT_WWW=/srv/example/www/static/img
+#   MEDIA_ROOT_PHOTOS=/srv/example/private/photos
+#   MEDIAOPT_SCHEDULE=04:15
+#   TZ=Europe/Amsterdam
+#
+# Start:
+#   docker compose --env-file /srv/mediaopt/.env -f /srv/mediaopt/compose.yaml up -d
+#
+# The container runs as uid/gid 1000 (`mediaopt`). The media trees and the state
+# directory must be writable by that uid *or* the service must run as root (see
+# the `user:` note below).
+# =============================================================================
+
+services:
+  mediaopt:
+    image: ${MEDIAOPT_IMAGE:-ghcr.io/hansvaneijsden/media-optimizer:latest}
+    container_name: mediaopt
+    # `schedule` is the long-lived mode: run once now if the last recorded run
+    # is overdue, then sleep until the next slot every day.
+    command: ["schedule"]
+    restart: unless-stopped
+    stop_grace_period: 2m
+
+    environment:
+      MEDIAOPT_CONFIG: /etc/mediaopt/config.toml
+      # HH:MM or the daily cron form "M H * * *" (src/sched.rs). Interpreted in
+      # the container's local time, which is why TZ is set below.
+      MEDIAOPT_SCHEDULE: ${MEDIAOPT_SCHEDULE:-04:15}
+      TZ: ${TZ:-Europe/Amsterdam}
+      RUST_LOG: ${RUST_LOG:-info}
+
+    # Same limits as the systemd unit: this must never take a whole server.
+    cpus: "2"
+    mem_limit: 1g
+    pids_limit: 256
+
+    # The container only writes to the bind mounts. A read-only rootfs means a
+    # compromised encoder cannot modify the image; /tmp is a tmpfs because
+    # SQLite may spill temporary data there.
+    read_only: true
+    tmpfs:
+      - /tmp:size=256m,mode=1777
+
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
+    # These three capabilities are what `src/replace.rs` needs to chown a
+    # replaced file back to its original uid/gid (and to override permissions
+    # on files owned by another user). They only take effect for uid 0: a
+    # non-root process does not get capabilities from cap_add, and with
+    # no-new-privileges set it cannot gain them from file capabilities either.
+    # The image's default user is uid 1000. If the media trees are owned by a
+    # different uid, run this service as root by uncommenting `user: "0:0"`;
+    # the three capabilities above are then exactly what is needed.
+    cap_add:
+      - CHOWN
+      - DAC_OVERRIDE
+      - FOWNER
+    # user: "0:0"
+
+    volumes:
+      # Configuration: a single file, read-only. The container-side path is
+      # also the default in the image (MEDIAOPT_CONFIG).
+      - ${MEDIAOPT_CONFIG_FILE:?set MEDIAOPT_CONFIG_FILE}:/etc/mediaopt/config.toml:ro
+      # Media roots. The container-side path must match [[roots]].path in the
+      # mounted config.toml. Mount each root separately; never mount the state
+      # directory's parent or the whole /srv here.
+      - ${MEDIA_ROOT_WWW:?set MEDIA_ROOT_WWW}:/media/www
+      - ${MEDIA_ROOT_PHOTOS:?set MEDIA_ROOT_PHOTOS}:/media/photos
+      # The SQLite manifest and the JSON reports. A bind mount (not a named
+      # volume) so it can be backed up and inspected like the media itself.
+      - ${MEDIAOPT_STATE_DIR:?set MEDIAOPT_STATE_DIR}:/var/lib/mediaopt
+
+    logging:
+      driver: json-file
+      options:
+        max-size: "50m"
+        max-file: "5"
+
+    # Health signal: `mediaopt tools` parses the mounted config and resolves
+    # the four engine binaries. That is deliberate: the scheduler is idle for
+    # almost all of the day, so a work-based check (recent report, queue depth)
+    # would mark a perfectly healthy container unhealthy. It fails on the
+    # realistic failure mode here - a missing or invalid config file - and it
+    # touches no media and no state.
+    #
+    # It does NOT prove that libvips can still encode: to check that, use a
+    # one-shot command instead, e.g.
+    #   docker exec mediaopt mediaopt --config /etc/mediaopt/config.toml tools
+    # and look for the engine versions, or encode a scratch image. Keeping the
+    # health check cheap is the point.
+    healthcheck:
+      test: ["CMD", "/usr/local/bin/mediaopt", "tools"]
+      interval: 5m
+      timeout: 30s
+      retries: 3
+      start_period: 2m

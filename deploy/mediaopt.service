@@ -1,0 +1,101 @@
+# mediaopt.service - one nightly optimisation pass, run by mediaopt.timer.
+#
+# This is the systemd alternative to deploy/compose.example.yaml. It runs the
+# same binary directly on the host instead of in a container; use one or the
+# other, never both against the same media trees.
+#
+# Install:
+#   install -m 0644 deploy/mediaopt.service deploy/mediaopt.timer /etc/systemd/system/
+#   systemctl daemon-reload
+#   systemctl enable --now mediaopt.timer
+#   # optional: systemctl start mediaopt.service   (run a pass right now)
+#
+# The timer lives in deploy/mediaopt.timer (a separate file, because that is
+# what `systemctl enable mediaopt.timer` expects). Keeping it separate also
+# means the service can be started by hand or by another timer without pulling
+# a schedule along.
+#
+# The container is the preferred deployment for most hosts; this unit exists
+# for hosts where a container is not wanted, and it deliberately mirrors the
+# container's resource limits.
+
+[Unit]
+Description=mediaopt - quality-targeted image optimiser (nightly pass)
+Documentation=https://github.com/HansVanEijsden/media-optimizer
+# Wait for the state directory and the media trees to be mounted: running
+# against an unmounted root would walk an empty directory and record a clean
+# run, which is worse than not running at all.
+RequiresMountsFor=/var/lib/mediaopt
+# Add the media roots that live on separate mounts, for the same reason:
+# RequiresMountsFor=/var/lib/mediaopt /home/example/www/static/img
+
+[Service]
+Type=oneshot
+# The log file is optional: the journal already receives stdout/stderr. It is
+# passed explicitly so deploy/logrotate.conf has a file to rotate, and because
+# a weekly journal rotation is usually shorter than the report retention.
+ExecStart=/usr/local/bin/mediaopt --log-file /var/log/mediaopt/mediaopt.log run
+Environment=MEDIAOPT_CONFIG=/etc/mediaopt/config.toml
+Environment=RUST_LOG=info
+# The binary sets nice 19 and idle I/O on itself (src/limits.rs); setting it on
+# the unit makes the whole process tree nice, including libvips children.
+Nice=19
+IOSchedulingClass=idle
+IOSchedulingPriority=7
+# Mirrors deploy/compose.example.yaml: at most two CPUs and one GiB of RAM.
+CPUQuota=200%
+MemoryMax=1G
+# Hard stop after six hours; src/limits.rs normally stops earlier (5h) and
+# finishes the file in flight. For Type=oneshot the start timeout *is* the
+# runtime limit: systemd documents RuntimeMaxSec as having no effect on
+# oneshot units, so the limit is expressed as TimeoutStartSec (the default
+# would otherwise kill the run after 90 seconds).
+TimeoutStartSec=6h
+TimeoutStopSec=120s
+
+# The process runs as root because replacing files in trees owned by www-data
+# or another uid requires chown() (src/replace.rs preserves uid/gid/mode/mtime)
+# and root is the only account that can read every tree. Keep the capability
+# set as small as possible: these three, and nothing else.
+CapabilityBoundingSet=CAP_CHOWN CAP_DAC_OVERRIDE CAP_FOWNER
+# AmbientCapabilities is not needed while the service runs as root, but it is
+# what you would add (together with User=mediaopt) if you switch to a non-root
+# account: capabilities from CapabilityBoundingSet are not effective for a
+# non-root process without them.
+NoNewPrivileges=yes
+# Filesystem hardening. ReadWritePaths re-opens the two places this service is
+# allowed to write; everything else stays read-only despite ProtectSystem=strict
+# and ProtectHome=read-only.
+ProtectSystem=strict
+ProtectHome=read-only
+PrivateTmp=yes
+PrivateDevices=yes
+ProtectClock=yes
+ProtectHostname=yes
+ProtectKernelLogs=yes
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectControlGroups=yes
+ProtectProc=invisible
+RestrictSUIDSGID=yes
+LockPersonality=yes
+# State and log directories are created and owned by systemd.
+StateDirectory=mediaopt
+StateDirectoryMode=0750
+LogsDirectory=mediaopt
+LogsDirectoryMode=0750
+# MUST match [state].db/report_dir and the enabled [[roots]] in the config file.
+# ProtectSystem=strict and ProtectHome=read-only make everything read-only; the
+# entries below re-open the state directory and the media roots for writing.
+# The /home/example/... paths are placeholders: edit them to the real roots.
+# The leading '-' means "ignore if the path does not exist yet", so a host
+# whose media volume failed to mount still boots (and the unit's
+# RequiresMountsFor can be extended for those mounts).
+ReadWritePaths=/var/lib/mediaopt
+ReadWritePaths=-/home/example/www/static/img -/home/example/private/photos
+
+# A failed night is reported by the next run; do not restart a oneshot unit.
+Restart=no
+
+[Install]
+WantedBy=multi-user.target

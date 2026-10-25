@@ -1,0 +1,35 @@
+# mediaopt.timer - start mediaopt.service once a night.
+#
+# Separate from mediaopt.service by design: systemd enables timers, not
+# oneshot services, and this keeps the schedule replaceable without touching
+# the service. Install both:
+#   install -m 0644 deploy/mediaopt.service deploy/mediaopt.timer /etc/systemd/system/
+#   systemctl daemon-reload
+#   systemctl enable --now mediaopt.timer
+#
+# The binary itself can also run as a long-lived scheduler (`mediaopt
+# schedule`, what the container uses) with its own catch-up logic. The timer +
+# oneshot pair is the host-native equivalent; Persistent=true is what gives it
+# the same "run after downtime" behaviour as the container's scheduler.
+#
+# `systemctl list-timers mediaopt.timer` shows the next elapse;
+# `journalctl -u mediaopt.service` shows the runs.
+
+[Unit]
+Description=Nightly mediaopt pass
+Documentation=https://github.com/HansVanEijsden/media-optimizer
+
+[Timer]
+# Local time of the host. Full syntax and timezone suffix, e.g. 04:15
+# Europe/Amsterdam if you want to pin it, are supported by newer systemd.
+OnCalendar=*-*-* 04:15:00
+# If the host was down at 04:15, run as soon as it comes back.
+Persistent=true
+# Spread the start over 20 minutes. The optimiser is nice 19 and I/O idle, but
+# a fleet of hosts starting at the same minute would still hammer a shared NAS.
+RandomizedDelaySec=20m
+AccuracySec=1m
+Unit=mediaopt.service
+
+[Install]
+WantedBy=timers.target
