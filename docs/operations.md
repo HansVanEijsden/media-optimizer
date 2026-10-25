@@ -50,6 +50,7 @@ must be absolute. The defaults below apply when a key is omitted.
 | `state.db` | `/var/lib/mediaopt/state.db` | SQLite manifest, never inside a media tree |
 | `state.report_dir` | `/var/lib/mediaopt/reports` | one JSON file per run |
 | `state.log_file` | unset | write a daily-rotated log file; `--log-file` overrides it |
+| `MEDIAOPT_PROGRESS_SECS` | `60` | environment variable: seconds between progress lines |
 | `state.report_days` | `90` | reports older than this are pruned after a run; 0 disables pruning |
 | `engine.vips` | `$VIPS_BIN`, then `PATH` | libvips CLI, required |
 | `engine.jpegtran` | `$JPEGTRAN_BIN`, then `PATH` | mozjpeg `jpegtran`, required |
@@ -148,6 +149,48 @@ run in flight is not interrupted mid-run: it finishes and records itself, then t
 exits. A stop during a long run therefore waits, or the process is killed. Each file is replaced
 atomically, so a kill never leaves a truncated file, but the run row stays unfinished and the
 current temporary file may be left for the next run to clean up.
+
+## Burn-down and remote mode
+
+Two ways to get through a large backlog without waiting weeks of nights.
+
+**Burn-down.** Setting `MEDIAOPT_BURNDOWN=1` in the container environment makes
+the scheduler start another run as soon as one ends because it hit
+`limits.max_runtime`. The host therefore works continuously until a run ends
+because the tree is exhausted, and then falls back to one run per night. The
+process still holds its nice level, idle I/O class and CPU quota, so interactive
+traffic always wins. Use it for a one-off catch-up, then remove it.
+
+**Remote mode.** The encoder, not the disk, is the expensive part: a two-core
+server needs days for a million-file backlog while a laptop needs hours. The
+split keeps every safety property, because the server still verifies and records
+everything:
+
+```console
+# on the fast machine, with libvips, mozjpeg jpegtran, pngquant and
+# ssimulacra2 on PATH (Homebrew's libvips links mozjpeg, Debian's does not)
+scripts/mediaopt-remote.sh --host web-a --config ~/.config/mediaopt/client.toml \
+    --batch 2000 --jobs 10
+```
+
+The script drives three subcommands over ssh:
+
+| where | command | what it does |
+| --- | --- | --- |
+| server | `mediaopt scan` | walks the roots, applies the manifest fast path and the decision engine, prints the files that still need work |
+| client | `mediaopt encode-batch` | encodes a downloaded batch and prints a self-contained result list |
+| server | `mediaopt apply-staged` | re-verifies each result against the live file, then installs it and records the manifest row |
+
+The client holds no state, so a run can be interrupted at any point: the next
+scan simply lists what is still open. The server keeps the manifest, so the
+nightly run and the remote pass never repeat each other's work. `--limit` previews
+a small slice; `--keep-work` leaves the downloaded batch on disk for inspection.
+
+Note that the staging directory and the media trees are separate bind mounts
+inside a container, so `apply-staged` copies the staged file to a temporary name
+beside the target before renaming it. `rename()` alone returns `EXDEV` across a
+mount boundary.
+
 
 ## Logging and rotation
 
