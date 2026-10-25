@@ -154,6 +154,7 @@ pub fn scan(
     let min_age = decide::parse_duration(&cfg.limits.min_file_age).unwrap_or_default();
     let mut stats = RemoteStats::default();
     let mut index = 0u64;
+    let mut examined = 0u64;
 
     let roots: Vec<RootConfig> = cfg
         .active_roots()
@@ -212,6 +213,15 @@ pub fn scan(
                 {
                     continue;
                 }
+            }
+            examined += 1;
+            // A full scan of a million-file tree takes a while and prints nothing
+            // else, so report on stderr (stdout carries the candidate list).
+            if examined % 50_000 == 0 {
+                eprintln!(
+                    "scan: {examined} files examined, {} candidate(s) so far",
+                    stats.candidates
+                );
             }
             let Ok(content) = probe::probe(entry.path()) else {
                 continue;

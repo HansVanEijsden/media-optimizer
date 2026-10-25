@@ -121,13 +121,26 @@ remote_mediaopt() {
 say "stopping the scheduler on $host so the two cannot race"
 ssh -o BatchMode=yes "$host" "docker stop $container >/dev/null 2>&1 || true"
 
-say "scanning on $host (this walks the tree, no writes)"
+reuse_scan=0
+[ -n "${MEDIAOPT_REUSE_SCAN:-}" ] && reuse_scan=1
+if [ "$reuse_scan" = 1 ] && [ -s "$work/candidates.tsv" ]; then
+  say "reusing the existing candidate list in $work"
+else
+  say "scanning on $host (this walks the tree, no writes)"
+fi
 scan_args="scan"
 [ -n "$root" ] && scan_args="$scan_args --root $root"
 [ "$limit" -gt 0 ] && scan_args="$scan_args --limit $limit"
-remote_mediaopt "$scan_args" > "$work/candidates.tsv"
+if [ "$reuse_scan" = 1 ] && [ -s "$work/candidates.tsv" ]; then
+  total=$(wc -l < "$work/candidates.tsv" | tr -d ' ')
+else
+  # Write to a temporary name and rename on success, so an interrupted scan
+  # cannot leave half a list that looks complete.
+  remote_mediaopt "$scan_args" > "$work/candidates.tsv.part"
+  mv "$work/candidates.tsv.part" "$work/candidates.tsv"
+  total=$(wc -l < "$work/candidates.tsv" | tr -d ' ')
+fi
 
-total=$(wc -l < "$work/candidates.tsv" | tr -d ' ')
 say "$total file(s) need work"
 [ "$total" -gt 0 ] || { say "nothing to do"; exit 0; }
 
