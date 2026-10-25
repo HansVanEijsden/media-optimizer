@@ -345,7 +345,14 @@ impl<'a> Runner<'a> {
         fingerprint: Fingerprint,
         digest: &str,
     ) -> Result<()> {
-        let temp = replace::temp_path(path);
+        // A real run needs its temporary file beside the original so the rename is
+        // atomic. A dry run replaces nothing, so it uses the system temporary
+        // directory instead and can therefore run against a read-only mount.
+        let temp = if self.dry_run {
+            replace::scratch_path(path)
+        } else {
+            replace::temp_path(path)
+        };
         match self.try_optimise(root, path, content, decision, &temp, fingerprint, digest) {
             Ok(_) => Ok(()),
             Err(e) => {

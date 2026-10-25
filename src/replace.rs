@@ -37,6 +37,17 @@ pub fn read_meta(path: &Path) -> io::Result<FileMeta> {
     })
 }
 
+/// A temporary path in the system temporary directory, for a dry run: it never
+/// replaces anything, and this lets a `plan` run work against a read-only mount.
+pub fn scratch_path(dst: &Path) -> PathBuf {
+    let name = dst
+        .file_name()
+        .map(|n| n.to_string_lossy().to_string())
+        .unwrap_or_else(|| "file".to_string());
+    let n = TEMP_COUNTER.fetch_add(1, Ordering::Relaxed);
+    std::env::temp_dir().join(format!(".mediaopt.{}.{n}.{name}.tmp", std::process::id()))
+}
+
 /// A temporary path next to `dst`, so the final rename stays inside one
 /// filesystem and therefore atomic.
 pub fn temp_path(dst: &Path) -> PathBuf {
@@ -205,6 +216,17 @@ mod tests {
         let other = temp_path(dst);
         assert_ne!(temp, other, "two workers must not collide");
         assert!(!is_temp_name("photo.jpg"));
+    }
+
+    #[test]
+    fn scratch_paths_leave_the_media_tree_alone() {
+        let dst = Path::new("/home/example/www/2024/05/photo.jpg");
+        let scratch = scratch_path(dst);
+        assert_ne!(scratch.parent(), dst.parent());
+        assert_eq!(scratch.parent(), Some(std::env::temp_dir().as_path()));
+        assert!(is_temp_name(
+            &scratch.file_name().unwrap().to_string_lossy()
+        ));
     }
 
     #[test]
