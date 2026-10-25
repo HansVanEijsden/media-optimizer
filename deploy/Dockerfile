@@ -53,8 +53,9 @@
 # layer. The squash matters: Docker counts deleted files from lower layers, so
 # without it the image would report ~137 MB even though only 106 MB is used.
 # There is no compiler, no apt cache and no source tree in the final image.
-# Measured: ~111 MB uncompressed layer (what a Linux Docker engine reports) and
-# ~35 MB compressed (what a server pulls). See "SIZE CHECK" at the end.
+# Measured: ~87 MB uncompressed layer on linux/amd64 and ~111 MB on linux/arm64
+# (what a Linux Docker engine reports), ~35 MB compressed (what a server pulls).
+# See "SIZE CHECK" at the end.
 #
 # Why not Alpine: a musl base would shrink the uncompressed image, but it also
 # means musl source builds of mozjpeg, libvips *and* libjxl (Debian's
@@ -426,13 +427,15 @@ ENV PATH=/usr/local/bin:/usr/local/sbin:/usr/sbin:/usr/bin:/sbin:/bin \
 # The single layer this image consists of.
 COPY --from=runtime / /
 
-# `mediaopt tools` reads the config and resolves the engine binaries. It is a
-# liveness + configuration check, not an encode: the scheduler legitimately sits
-# idle for ~24 hours, so a health check must not depend on recent work. It fails
-# if the mounted config is missing or invalid, which is the failure that
-# actually matters here. Compose overrides the timings.
+# Health signal (compose overrides the timings). `mediaopt tools` alone is not
+# enough: it parses the config and resolves the engines, but it still exits 0
+# when a binary is missing (it only prints a WARNING). The second half is the
+# check that matters for this image: libvips must start *and* still report JPEG
+# support through the mozjpeg build. Both commands are cheap and touch no media,
+# which matters because the scheduler legitimately sits idle for ~24 hours and
+# a work-based probe would report a healthy container as unhealthy.
 HEALTHCHECK --interval=5m --timeout=30s --start-period=2m --retries=3 \
-    CMD ["/usr/local/bin/mediaopt", "tools"]
+    CMD mediaopt tools >/dev/null && vips --vips-config | grep -q 'JPEG load/save.*true'
 
 USER mediaopt
 WORKDIR /var/lib/mediaopt
@@ -447,7 +450,7 @@ CMD ["schedule"]
 STOPSIGNAL SIGTERM
 
 # =============================================================================
-# SIZE CHECK - measured on linux/arm64 (an M-series Mac, Docker Desktop 4.x).
+# SIZE CHECK - measured by building both platforms on 2026-10-25.
 # Reproduce with:
 #
 #   docker buildx build --platform linux/amd64 -f deploy/Dockerfile -t mediaopt:size .
@@ -459,21 +462,21 @@ STOPSIGNAL SIGTERM
 #   # What a server downloads (compressed layer + manifest):
 #   docker save mediaopt:size | gzip -1 | wc -c
 #
-# Measured (linux/arm64, this file's runtime stage, 2026-10-25):
-#   single image layer, uncompressed (docker history) ... 111 MB
-#     <- this is what `docker images` reports on a Linux Docker engine
-#   rootfs (du -sb inside the container) ................. 106 MB
-#   docker image inspect .Size (Docker Desktop) .......... 146 MB
-#     <- Desktop's containerd store counts the compressed blobs *and* the
-#        unpacked snapshots, so it is not the deployment size; do not use it
-#        as the budget number on a Mac.
-#   docker save | gzip -1 ................................ 35 MB
-#     <- what a server actually pulls from ghcr.io
+#                          linux/amd64 (servers)   linux/arm64 (Apple Silicon)
+#   uncompressed layer            ~87 MB                  111 MB
+#     <- what a Linux Docker engine's `docker images` shows
+#   rootfs (du -sb inside)        85.6 MB                 106 MB
+#   compressed pull size          34.7 MB                 34.8 MB
+#     <- what a server downloads from ghcr.io
 #
-# Budget: < 120 MB, measured as the single uncompressed layer that a Linux
-# Docker engine reports (~111 MB). Reference points: the debian:13-slim base
-# layer alone is ~110 MB in Docker's accounting (~30 MB compressed), the
-# engines plus their shared-library closure are ~20 MB, and the stripped
-# mediaopt binary is ~6 MB. Any change that grows the image by more than a
-# megabyte should come with a new measurement.
+# Both are below the 120 MB budget; arm64 is the larger one because the Debian
+# arm64 base layer is larger than the amd64 one. Docker Desktop's `.Size` is not
+# used for the budget: on a Mac it counts compressed blobs *and* unpacked
+# snapshots (146 MB for the arm64 image here), which is not what a server
+# deploys. Use the uncompressed layer or the compressed pull size.
+#
+# Reference points: the debian:13-slim base layer alone is ~80 MB (amd64) /
+# ~100 MB (arm64) uncompressed, the engines plus their shared-library closure
+# are ~20 MB, and the stripped mediaopt binary is ~6 MB. Any change that grows
+# the image by more than a megabyte should come with a new measurement.
 # =============================================================================

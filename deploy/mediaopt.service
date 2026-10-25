@@ -63,7 +63,7 @@ CapabilityBoundingSet=CAP_CHOWN CAP_DAC_OVERRIDE CAP_FOWNER
 # account: capabilities from CapabilityBoundingSet are not effective for a
 # non-root process without them.
 NoNewPrivileges=yes
-# Filesystem hardening. ReadWritePaths re-opens the two places this service is
+# Filesystem hardening. ReadWritePaths re-opens the paths this service is
 # allowed to write; everything else stays read-only despite ProtectSystem=strict
 # and ProtectHome=read-only.
 ProtectSystem=strict

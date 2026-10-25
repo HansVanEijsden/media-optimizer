@@ -99,20 +99,25 @@ services:
         max-size: "50m"
         max-file: "5"
 
-    # Health signal: `mediaopt tools` parses the mounted config and resolves
-    # the four engine binaries. That is deliberate: the scheduler is idle for
-    # almost all of the day, so a work-based check (recent report, queue depth)
-    # would mark a perfectly healthy container unhealthy. It fails on the
-    # realistic failure mode here - a missing or invalid config file - and it
-    # touches no media and no state.
+    # Health signal.
     #
-    # It does NOT prove that libvips can still encode: to check that, use a
-    # one-shot command instead, e.g.
-    #   docker exec mediaopt mediaopt --config /etc/mediaopt/config.toml tools
-    # and look for the engine versions, or encode a scratch image. Keeping the
-    # health check cheap is the point.
+    # `mediaopt tools` alone is not a good signal: it exits 0 even when an
+    # engine binary is missing (it only prints a WARNING), so a container with a
+    # broken libvips would still be reported healthy. The check therefore *also*
+    # asks vips to start and confirm that it has JPEG support. That is the
+    # regression this image exists to prevent (libvips linked against the wrong
+    # libjpeg), and it fails immediately if a shared library is missing.
+    #
+    # It deliberately does not encode an image or look at recent runs: the
+    # scheduler is idle for almost the whole day, so a work-based probe would
+    # mark a perfectly healthy container unhealthy. Cost: parsing the config and
+    # starting libvips, every 5 minutes.
+    #
+    # Note: /usr/local/bin is on PATH in the image; CMD-SHELL is used because
+    # the check is a pipeline. /bin/sh is present (the image is a pruned Debian
+    # userland, not distroless).
     healthcheck:
-      test: ["CMD", "/usr/local/bin/mediaopt", "tools"]
+      test: ["CMD-SHELL", "mediaopt tools >/dev/null && vips --vips-config | grep -q 'JPEG load/save.*true'"]
       interval: 5m
       timeout: 30s
       retries: 3

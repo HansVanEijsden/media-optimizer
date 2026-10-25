@@ -170,8 +170,8 @@ palette result must also be at least `png.min_gain_percent` smaller, otherwise
 the original stays.
 
 PNGs with alpha, an existing palette or an ICC profile are never palette
-candidates. The tool uses `pngquant --speed 1` and, in 0.1.0, does not pass the
-configured `png.dither` value to pngquant.
+candidates. The tool uses `pngquant --quality <floor>-100 --speed 1`, so
+pngquant itself refuses to write a result it considers worse than the floor.
 
 ## Metric comparison
 

@@ -31,7 +31,6 @@ must be absolute. The defaults below apply when a key is omitted.
 | --- | --- | --- |
 | `png.mode` | `"quant_if_safe"` | `skip`, `lossless` or `quant_if_safe` |
 | `png.quality_floor` | `80` | pngquant floor; below it the palette result is discarded and the lossless path is used |
-| `png.dither` | `1.0` | accepted but not passed to pngquant in 0.1.0 |
 | `png.min_gain_percent` | `5.0` | palette result must be at least this much smaller |
 | `png.lossless_effort` | `2` | oxipng preset, 0 to 6 |
 | `webp.lossless_only` | `true` | lossless WebP is considered, but the action is not implemented in 0.1.0 and is recorded as an error |
@@ -46,11 +45,10 @@ must be absolute. The defaults below apply when a key is omitted.
 | `limits.free_space_reserve` | `"2GiB"` | a root is skipped when the filesystem has less free space |
 | `limits.min_file_size` | `5120` | smaller files are never considered |
 | `limits.max_bytes_per_run` | `0` | input bytes replaced per run; 0 means unlimited |
-| `limits.max_files_per_run` | `0` | files changed per run; 0 means unlimited |
-| `limits.oldest_first` | `true` | accepted but not applied in 0.1.0; walk order is filesystem order |
+| `limits.max_files_per_run` | `0` | encode attempts per run; 0 means unlimited |
 | `state.db` | `/var/lib/mediaopt/state.db` | SQLite manifest, never inside a media tree |
 | `state.report_dir` | `/var/lib/mediaopt/reports` | one JSON file per run |
-| `state.log_file` | unset | accepted but not applied in 0.1.0; use `--log-file` |
+| `state.log_file` | unset | write a daily-rotated log file; `--log-file` overrides it |
 | `state.report_days` | `90` | reports older than this are pruned after a run; 0 disables pruning |
 | `engine.vips` | `$VIPS_BIN`, then `PATH` | libvips CLI, required |
 | `engine.jpegtran` | `$JPEGTRAN_BIN`, then `PATH` | mozjpeg `jpegtran`, required |

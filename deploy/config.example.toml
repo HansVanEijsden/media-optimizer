@@ -85,7 +85,6 @@
 # quality_floor = 80
 
 # Dithering amount for palette reduction (0.0-1.0).
-# dither = 1.0
 
 # Palette quantisation is only kept when it saves at least this percentage.
 # min_gain_percent = 5.0
@@ -130,7 +129,6 @@
 # max_files_per_run = 0
 
 # Order files oldest-first so each night builds on the previous one.
-# oldest_first = true
 
 # =============================================================================
 # [state]
@@ -144,9 +142,10 @@
 # Directory for the per-run JSON reports.
 # report_dir = "/var/lib/mediaopt/reports"
 
-# Optional log file. The container and the systemd unit log to stdout/journal,
-# so this is left unset unless you run the binary directly. When set, the file
-# is rotated daily by the process itself (tracing-appender).
+# Optional log file. Default is unset (no file): the container and the systemd
+# unit log to stdout/journal. Uncomment to also write a file; the process then
+# rotates it daily itself (tracing-appender), so logrotate only has to
+# compress/age the dated files.
 # log_file = "/var/log/mediaopt/mediaopt.log"
 
 # Days of JSON reports to keep.

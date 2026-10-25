@@ -200,10 +200,11 @@ with the consequences described in [operations](operations.md).
 
 - `webp.lossless_only` leads to a `webp_lossless` decision, but the encoder
   returns "not implemented in v1" and the file is recorded as an error.
-- `limits.oldest_first`, `png.dither`, the per-root byte and file budgets,
-  `state.log_file` and the per-root `keep` list are parsed but not applied.
+- Walk order is filesystem order. There is no "oldest first" ordering: the
+  per-run budgets are what stage a first pass, not the traversal order.
 - An encode error records a row whose fingerprint still matches the unchanged
-  file. Because the fast path skips every non-pending row with a matching
-  fingerprint, that file is only retried after it changes. There is no CLI
-  command in 0.1.0 to clear a single row.
+  file. Rows in `error` and `pending` state are retried on the next run, so a
+  transient failure heals itself; there is no CLI command in 0.1.0 to clear a
+  single row, and a permanently broken file is retried nightly (one encode
+  attempt, recorded each time).
 - Metadata and timestamp handling uses Unix APIs; the tool targets Unix hosts.
