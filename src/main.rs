@@ -81,6 +81,48 @@ enum Command {
     Compact,
     /// Run on a daily schedule forever (the container entry point)
     Schedule,
+
+    /// Remote mode, server side: list the files that still need work as TSV
+    Scan {
+        /// Limit to one configured root
+        #[arg(long)]
+        root: Option<PathBuf>,
+        /// Stop after this many candidates (0 = all)
+        #[arg(long, default_value_t = 0)]
+        limit: u64,
+        /// Write to this file instead of stdout
+        #[arg(long)]
+        out: Option<PathBuf>,
+    },
+
+    /// Remote mode, client side: encode one downloaded batch
+    EncodeBatch {
+        /// Candidate list from `scan`
+        #[arg(long)]
+        list: PathBuf,
+        /// Directory holding the downloaded files, mirroring their absolute paths
+        #[arg(long)]
+        input: PathBuf,
+        /// Directory for the encoded files (index-named)
+        #[arg(long)]
+        output: PathBuf,
+        /// Where to write the result list
+        #[arg(long)]
+        result: PathBuf,
+        /// Worker threads on this machine
+        #[arg(long, default_value_t = 8)]
+        jobs: usize,
+    },
+
+    /// Remote mode, server side: verify and install encoded files
+    ApplyStaged {
+        /// Directory holding the encoded files
+        #[arg(long)]
+        input: PathBuf,
+        /// Result list from `encode-batch` (`-` for stdin)
+        #[arg(long)]
+        result: PathBuf,
+    },
 }
 
 fn main() -> Result<()> {
@@ -156,6 +198,73 @@ fn main() -> Result<()> {
         Command::Import { input } => import(&cfg, &input),
         Command::Compact => compact(&cfg),
         Command::Schedule => schedule(&cfg, &tools),
+        Command::Scan { root, limit, out } => {
+            let stdout = std::io::stdout();
+            let mut lock = stdout.lock();
+            let mut sink: Box<dyn std::io::Write> = match out {
+                Some(path) => Box::new(std::io::BufWriter::new(std::fs::File::create(&path)?)),
+                None => Box::new(&mut lock),
+            };
+            let stats = mediaopt::remote::scan(&cfg, root.as_deref(), limit, &mut sink)?;
+            sink.flush()?;
+            drop(sink);
+            eprintln!(
+                "scan: {} candidate(s){}",
+                stats.candidates,
+                if limit > 0 {
+                    format!(" (limit {limit})")
+                } else {
+                    String::new()
+                }
+            );
+            Ok(())
+        }
+        Command::EncodeBatch {
+            list,
+            input,
+            output,
+            result,
+            jobs,
+        } => {
+            require_engines(&tools)?;
+            let candidates = mediaopt::remote::read_candidates(&list)?;
+            if candidates.is_empty() {
+                eprintln!("nothing to encode");
+                return Ok(());
+            }
+            let results =
+                mediaopt::remote::encode_batch(&cfg, &tools, &candidates, &input, &output, jobs)?;
+            let mut file = std::io::BufWriter::new(std::fs::File::create(&result)?);
+            use std::io::Write as _;
+            let mut ok = 0;
+            for r in &results {
+                if r.status == "ok" {
+                    ok += 1;
+                }
+                writeln!(file, "{}", r.to_tsv())?;
+            }
+            file.flush()?;
+            eprintln!(
+                "encode-batch: {} file(s), {ok} worth applying, {} rejected",
+                results.len(),
+                results.len() - ok
+            );
+            Ok(())
+        }
+        Command::ApplyStaged { input, result } => {
+            require_engines(&tools)?;
+            let results = mediaopt::remote::read_results(&result)?;
+            let stats = mediaopt::remote::apply_staged(&cfg, &tools, &input, &results)?;
+            println!(
+                "apply-staged: {} checked, {} replaced, {} rejected, {} errors, {} freed",
+                stats.encoded,
+                stats.changed,
+                stats.rejected,
+                stats.errors,
+                limits::human_bytes(stats.saved())
+            );
+            Ok(())
+        }
     }
 }
 

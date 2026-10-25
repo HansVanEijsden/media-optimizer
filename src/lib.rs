@@ -10,6 +10,7 @@ pub mod limits;
 pub mod manifest;
 pub mod png;
 pub mod probe;
+pub mod remote;
 pub mod replace;
 pub mod report;
 pub mod run;

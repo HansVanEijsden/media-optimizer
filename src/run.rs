@@ -804,6 +804,13 @@ impl<'a> Runner<'a> {
         if self.stop.load(Ordering::Relaxed) {
             return true;
         }
+        // A container stop must not wait for a whole tree. The scheduler installs
+        // the handler, but a plain `run` gets it too, so Ctrl-C and `docker stop`
+        // both finish the file in flight and exit cleanly.
+        if crate::sched::shutdown_requested() {
+            self.mark_stopped("signal");
+            return true;
+        }
         match self.budget.lock().unwrap().check() {
             Stop::Continue => false,
             Stop::Exhausted(reason) => {
@@ -870,6 +877,7 @@ fn is_ignored_dir(name: &str) -> bool {
 /// Entry point used by `main` and by the scheduler.
 pub fn run(cfg: &Config, tools: &Tools, options: RunOptions, mode: &str) -> Result<RunReport> {
     let host = crate::hostname();
+    crate::sched::install_signal_handlers();
     let lock_path = cfg.state.db.with_extension("lock");
     let _lock = RunLock::acquire(&lock_path)?;
     let priority = limits::apply_low_priority();
