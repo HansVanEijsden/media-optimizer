@@ -210,16 +210,36 @@ pub fn mtime_ns(md: &std::fs::Metadata) -> i64 {
         .saturating_add(md.mtime_nsec())
 }
 
-/// Delete temporary files a crashed run left behind, in one directory.
-pub fn clean_stale_temps(dir: &Path) -> usize {
+/// Delete temporary files an earlier run left behind, recursively.
+///
+/// Only files older than `min_age` are touched: a temp younger than that may
+/// belong to a run that is still working, and deleting it would corrupt that
+/// encode. The first version of this function looked only at the top of the root
+/// and so never found anything in a year/month tree, which is why a leak of tens
+/// of thousands of files went unnoticed.
+pub fn clean_stale_temps(dir: &Path, min_age: std::time::Duration) -> usize {
     let mut removed = 0;
-    let Ok(entries) = std::fs::read_dir(dir) else {
-        return 0;
-    };
-    for entry in entries.flatten() {
-        if is_temp_name(&entry.file_name().to_string_lossy())
-            && std::fs::remove_file(entry.path()).is_ok()
-        {
+    let now = std::time::SystemTime::now();
+    // No filter_entry here: it would drop the files as well as the directories.
+    let walker = walkdir::WalkDir::new(dir).follow_links(false);
+    for entry in walker.into_iter().flatten() {
+        if !entry.file_type().is_file() {
+            continue;
+        }
+        if !is_temp_name(&entry.file_name().to_string_lossy()) {
+            continue;
+        }
+        let Ok(metadata) = entry.metadata() else {
+            continue;
+        };
+        let Ok(modified) = metadata.modified() else {
+            continue;
+        };
+        let age = now.duration_since(modified).unwrap_or_default();
+        if age < min_age {
+            continue;
+        }
+        if std::fs::remove_file(entry.path()).is_ok() {
             removed += 1;
         }
     }
@@ -323,12 +343,26 @@ mod tests {
     }
 
     #[test]
-    fn stale_temps_are_cleaned() {
+    fn stale_temps_are_cleaned_recursively_but_young_ones_are_kept() {
         let dir = tempfile::tempdir().unwrap();
-        let dst = dir.path().join("photo.jpg");
-        std::fs::write(temp_path(&dst), b"junk").unwrap();
+        let nested = dir.path().join("2024/05");
+        std::fs::create_dir_all(&nested).unwrap();
+        let dst = nested.join("photo.jpg");
         std::fs::write(&dst, b"real").unwrap();
-        assert_eq!(clean_stale_temps(dir.path()), 1);
+        let old_temp = temp_path(&dst);
+        std::fs::write(&old_temp, b"junk").unwrap();
+        // The nested tree is where the old version of this function never looked.
+        assert_eq!(clean_stale_temps(dir.path(), std::time::Duration::ZERO), 1);
         assert!(dst.exists());
+        assert!(!old_temp.exists());
+
+        let young = temp_path(&dst);
+        std::fs::write(&young, b"in flight").unwrap();
+        assert_eq!(
+            clean_stale_temps(dir.path(), std::time::Duration::from_secs(1800)),
+            0,
+            "a temp file a running encode may still be using must survive"
+        );
+        assert!(young.exists());
     }
 }

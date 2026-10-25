@@ -154,7 +154,7 @@ impl<'a> Runner<'a> {
                 continue;
             }
             if !self.dry_run {
-                let removed = replace::clean_stale_temps(&root.path);
+                let removed = replace::clean_stale_temps(&root.path, Duration::from_secs(1800));
                 if removed > 0 {
                     tracing::info!(
                         "removed {removed} stale temporary file(s) under {}",
@@ -496,6 +496,7 @@ impl<'a> Runner<'a> {
                 decision,
                 fingerprint,
                 digest,
+                temp,
                 size_before,
                 size_after,
                 "result is not smaller",
@@ -510,6 +511,7 @@ impl<'a> Runner<'a> {
                 decision,
                 fingerprint,
                 digest,
+                temp,
                 size_before,
                 size_after,
                 &format!("gain {gain_percent:.1}% is below the {min_gain:.1}% margin"),
@@ -526,6 +528,7 @@ impl<'a> Runner<'a> {
                         decision,
                         fingerprint,
                         digest,
+                        temp,
                         size_before,
                         size_after,
                         &format!("ssimu2 {measured:.1} is below the floor {floor:.1}"),
@@ -715,10 +718,15 @@ impl<'a> Runner<'a> {
         decision: &Decision,
         fingerprint: Fingerprint,
         digest: &str,
+        temp: &Path,
         size_before: u64,
         size_after: u64,
         why: &str,
     ) -> Result<()> {
+        // A rejected file leaves its encoded output behind unless we remove it
+        // here. Rejections are the majority of files, so forgetting this fills
+        // the tree with hidden temporaries.
+        let _ = std::fs::remove_file(temp);
         self.counters.rejected.fetch_add(1, Ordering::Relaxed);
         tracing::debug!("{}: keeping original ({why})", path.display());
         let mut record = self.base_record(path, root, content, fingerprint, digest);
