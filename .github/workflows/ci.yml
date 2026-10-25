@@ -12,7 +12,19 @@ name: CI
 on:
   push:
     branches: [main]
+    # Documentation and metadata changes do not change the binary, so they must
+    # not spend a matrix of runners.
+    paths-ignore:
+      - '**.md'
+      - 'docs/**'
+      - 'LICENSE-*'
+      - '.gitignore'
+      - '.dockerignore'
   pull_request:
+    paths-ignore:
+      - '**.md'
+      - 'docs/**'
+      - 'LICENSE-*'
 
 permissions:
   contents: read

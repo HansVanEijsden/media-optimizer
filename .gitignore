@@ -22,3 +22,9 @@ local-config.toml
 
 # Scratch space used while measuring and debugging.
 /tmp/
+
+# The project-specific name blocklist lives OUTSIDE the repository on purpose: a
+# committed list of the names you are protecting is itself the leak. The checker
+# reads $MEDIAOPT_BLOCKLIST or ~/.config/mediaopt/blocklist.txt.
+blocklist.txt
+*.blocklist

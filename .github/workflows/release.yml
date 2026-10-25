@@ -17,6 +17,20 @@ on:
   push:
     branches: [main]
     tags: ["v*"]
+    # Build only when something that ends up inside the image changed. Editing
+    # documentation or a deployment example must not spend a two-architecture
+    # build: mozjpeg and libvips are compiled from source here.
+    #
+    # Note: GitHub applies `paths` to tag pushes too, so a release tag whose
+    # commit touches no listed path is skipped. Use the manual trigger below for
+    # that case.
+    paths:
+      - 'src/**'
+      - 'Cargo.toml'
+      - 'Cargo.lock'
+      - 'deploy/Dockerfile'
+      - '.dockerignore'
+  workflow_dispatch:
 
 permissions:
   contents: read

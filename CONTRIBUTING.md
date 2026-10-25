@@ -73,6 +73,14 @@ Run the repository check before you push:
 scripts/check-no-secrets.sh
 ```
 
+The checker has two layers. The generic one is in the script itself: e-mail
+addresses, IPv4 addresses, private key headers and long hex tokens. The
+project-specific names that must never appear here are **not** in the script,
+because a committed list of the names you are protecting is itself the leak.
+They live in a file outside the repository; point `$MEDIAOPT_BLOCKLIST` at it,
+or use the default `~/.config/mediaopt/blocklist.txt`. Without it, only the
+generic layer runs, and the script says so.
+
 If the check flags something, fix the content before pushing. Deleting the file
 in a later commit does not remove the data from history, so rewrite the commit
 before it leaves your machine.

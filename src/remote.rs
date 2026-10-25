@@ -299,10 +299,7 @@ fn encode_one(
     // The download preserves the tree, so the local copy sits at the same
     // relative path it has on the server. Output is index-named: it only has to
     // be unique inside one batch.
-    let relative = cand
-        .path
-        .strip_prefix("/")
-        .unwrap_or(cand.path.as_path());
+    let relative = cand.path.strip_prefix("/").unwrap_or(cand.path.as_path());
     let src = input.join(relative);
     let dst = output.join(cand.index.to_string());
     let content = probe::probe(&src).with_context(|| format!("probing {}", src.display()))?;
@@ -369,7 +366,8 @@ fn encode_one(
             format!("q{quality_used}")
         };
         let bytes = std::fs::read(&dst)?;
-        if let Some(marked) = jpeg::with_tool_marker(&bytes, &jpeg::tool_marker(VERSION, &descriptor))
+        if let Some(marked) =
+            jpeg::with_tool_marker(&bytes, &jpeg::tool_marker(VERSION, &descriptor))
         {
             std::fs::write(&dst, marked)?;
         }
@@ -670,10 +668,7 @@ pub fn read_candidates(path: &Path) -> Result<Vec<Candidate>> {
 pub fn read_results(path: &Path) -> Result<Vec<StagedResult>> {
     if path == Path::new("-") {
         let stdin = std::io::stdin();
-        let lines: Vec<String> = stdin
-            .lock()
-            .lines()
-            .collect::<std::io::Result<Vec<_>>>()?;
+        let lines: Vec<String> = stdin.lock().lines().collect::<std::io::Result<Vec<_>>>()?;
         return parse_results(lines.iter().map(|s| s.as_str()));
     }
     let file = std::fs::File::open(path)
