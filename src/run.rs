@@ -108,6 +108,8 @@ pub struct Runner<'a> {
     stop: AtomicBool,
     stop_reason: Mutex<Option<&'static str>>,
     counters: Counters,
+    started: std::time::Instant,
+    last_progress: Mutex<std::time::Instant>,
 }
 
 impl<'a> Runner<'a> {
@@ -128,6 +130,8 @@ impl<'a> Runner<'a> {
             stop: AtomicBool::new(false),
             stop_reason: Mutex::new(None),
             counters: Counters::default(),
+            started: std::time::Instant::now(),
+            last_progress: Mutex::new(std::time::Instant::now()),
         })
     }
 
@@ -333,6 +337,7 @@ impl<'a> Runner<'a> {
         // A dry run goes through the real encoder and then throws the result away:
         // that is the only way to report the exact saving per file before touching
         // anything, which is what a pilot review needs.
+        self.maybe_log_progress(path);
         self.optimise(root, path, &content, &decision, fingerprint, digest)
     }
 
@@ -798,6 +803,42 @@ impl<'a> Runner<'a> {
             tracing::info!("stopping early: {reason} reached");
             *slot = Some(reason);
         }
+    }
+
+    /// One INFO line a minute, so a run that lasts all night is not silent and an
+    /// operator can see which directory it is in without turning on debug logs.
+    fn maybe_log_progress(&self, path: &Path) {
+        // Operators watching a pilot want a faster heartbeat than one a minute;
+        // MEDIAOPT_PROGRESS_SECS overrides it without a rebuild.
+        let every = std::env::var("MEDIAOPT_PROGRESS_SECS")
+            .ok()
+            .and_then(|v| v.parse::<u64>().ok())
+            .filter(|v| *v > 0)
+            .unwrap_or(60);
+        let mut last = self.last_progress.lock().unwrap();
+        if last.elapsed() < std::time::Duration::from_secs(every) {
+            return;
+        }
+        *last = std::time::Instant::now();
+        let seen = self.counters.seen.load(Ordering::Relaxed);
+        let changed = self.counters.changed.load(Ordering::Relaxed);
+        let rejected = self.counters.rejected.load(Ordering::Relaxed);
+        let errors = self.counters.errors.load(Ordering::Relaxed);
+        let before = self.counters.bytes_before.load(Ordering::Relaxed);
+        let after = self.counters.bytes_after.load(Ordering::Relaxed);
+        let elapsed = self.started.elapsed().as_secs_f64().max(1.0);
+        tracing::info!(
+            "progress: dir={} seen={} changed={} rejected={} errors={} freed={} rate={:.1}/s",
+            path.parent()
+                .map(|p| p.display().to_string())
+                .unwrap_or_default(),
+            seen,
+            changed,
+            rejected,
+            errors,
+            limits::human_bytes(before.saturating_sub(after)),
+            seen as f64 / elapsed
+        );
     }
 
     fn budget_reached(&self) -> bool {

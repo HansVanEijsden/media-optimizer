@@ -508,7 +508,10 @@ fn init_logging(
     use tracing_subscriber::EnvFilter;
     use tracing_subscriber::Layer;
 
-    let filter = EnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::new("info"));
+    // oxipng logs one INFO line per PNG through the `log` bridge; at one line
+    // every few seconds it drowns out the run's own progress lines.
+    let filter =
+        EnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::new("info,oxipng=error"));
     let stdout_layer = if cli.log_json {
         tracing_subscriber::fmt::layer()
             .json()

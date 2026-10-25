@@ -105,7 +105,7 @@ say "stopping the scheduler on $host so the two cannot race"
 ssh -o BatchMode=yes "$host" "docker stop $container >/dev/null 2>&1 || true"
 
 say "scanning on $host (this walks the tree, no writes)"
-scan_args="scan --tsv"
+scan_args="scan"
 [ -n "$root" ] && scan_args="$scan_args --root $root"
 [ "$limit" -gt 0 ] && scan_args="$scan_args --limit $limit"
 remote_mediaopt "$scan_args" > "$work/candidates.tsv"
