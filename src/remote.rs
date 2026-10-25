@@ -267,14 +267,16 @@ pub fn scan(
             }
             stats.candidates += 1;
             index += 1;
-            let line = format!(
-                "{}\t{}\t{}\t{}\n",
+            // Always go through Candidate::to_tsv: it encodes the path as base64,
+            // and writing the display() form here is what corrupted names that are
+            // not valid UTF-8.
+            let line = Candidate {
                 index,
-                decision.action_label(),
+                path: entry.path().to_path_buf(),
+                action: decision.action_label().to_string(),
                 size,
-                entry.path().display()
-            );
-            out.write_all(line.as_bytes())?;
+            };
+            writeln!(out, "{}", line.to_tsv())?;
             if limit > 0 && stats.candidates >= limit {
                 return Ok(stats);
             }

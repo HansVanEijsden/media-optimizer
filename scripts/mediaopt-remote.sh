@@ -163,16 +163,36 @@ while :; do
   # Download: tar keeps the tree, so the local copy lands at the same relative
   # path it has on the server and `encode-batch` can find it.
   # Column 4 is the base64 of the raw path bytes, so names that are not valid
-  # UTF-8 survive the trip. tar gets a NUL-separated list, which also survives
-  # tabs and newlines in a name.
-  cut -f4 "$work/batch.tsv" | python3 -c '
+  # UTF-8 survive the transfer. macOS cannot store such a name at all (APFS
+  # requires valid UTF-8), so those files are dropped here and left to the
+  # server's own run. tar gets a NUL-separated list, which also survives tabs
+  # and newlines in a name.
+  python3 - "$work/batch.tsv" "$work/paths.bin" > "$work/batch.valid.tsv" <<'PYEOF'
 import base64, sys
-out = sys.stdout.buffer
-for line in sys.stdin.buffer:
-    line = line.strip()
-    if line:
-        out.write(base64.b64decode(line).lstrip(b"/") + b"\0")
-' > "$work/paths.bin"
+
+batch, paths_out = sys.argv[1], sys.argv[2]
+kept = dropped = 0
+with open(paths_out, "wb") as out, open(batch, "rb") as source:
+    for line in source:
+        fields = line.rstrip(b"\n").split(b"\t")
+        if len(fields) != 4:
+            continue
+        try:
+            raw = base64.b64decode(fields[3], validate=True)
+            raw.decode("utf-8")
+        except (ValueError, UnicodeDecodeError):
+            dropped += 1
+            continue
+        out.write(raw.lstrip(b"/") + b"\0")
+        sys.stdout.buffer.write(line)
+        kept += 1
+print(
+    f"  download list: {kept} file(s)"
+    + (f", {dropped} left to the server (name is not valid UTF-8)" if dropped else ""),
+    file=sys.stderr,
+)
+PYEOF
+  mv "$work/batch.valid.tsv" "$work/batch.tsv"
   rm -rf "$work/in" "$work/out"; mkdir -p "$work/in" "$work/out"
   # --ignore-failed-read: a file deleted between the scan and the download is a
   # normal race, not a reason to abandon the batch.
