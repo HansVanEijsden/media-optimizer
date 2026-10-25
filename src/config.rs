@@ -346,6 +346,42 @@ impl Config {
     pub fn report_dir(&self) -> &Path {
         &self.state.report_dir
     }
+
+    /// A digest of everything that can change a decision.
+    ///
+    /// Stored with every manifest row: when it differs from the current run, the
+    /// fast path re-evaluates the file instead of skipping it. Without this,
+    /// tightening the quality floor or turning the lossless pass on would have no
+    /// effect on files an earlier run had already decided about.
+    pub fn decision_digest(&self, root: &RootConfig) -> String {
+        use std::fmt::Write as _;
+        let j = &self.jpeg;
+        let mut text = String::with_capacity(256);
+        let _ = write!(
+            text,
+            "jpeg:{:?}:{}:{}:{}:{}:{}:{}:{}:{}:{:?}:{:?}|png:{:?}:{}:{}:{}|webp:{}|min:{}|root:{:?}:{:?}",
+            j.quality_mode,
+            j.ssimu2_floor,
+            j.fixed_quality,
+            j.reencode_min_quality,
+            j.max_dimension,
+            j.resize_kernel,
+            j.min_gain_percent,
+            j.lossless_pass,
+            j.min_gain_percent_lossless,
+            j.subsample,
+            j.keep,
+            self.png.mode,
+            self.png.quality_floor,
+            self.png.min_gain_percent,
+            self.png.lossless_effort,
+            self.webp.lossless_only,
+            self.limits.min_file_size,
+            root.policy,
+            root.keep
+        );
+        crate::replace::sha256_bytes(text.as_bytes())[..16].to_string()
+    }
 }
 
 fn d_true() -> bool {

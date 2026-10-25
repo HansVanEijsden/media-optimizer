@@ -167,8 +167,9 @@ impl<'a> Runner<'a> {
                     .unwrap_or(self.cfg.limits.max_files_per_run),
                 decide::parse_duration(&self.cfg.limits.max_runtime),
             );
+            let digest = self.cfg.decision_digest(&root);
             let before = self.counters.snapshot();
-            self.run_root(&root);
+            self.run_root(&root, &digest);
             let after = self.counters.snapshot();
             per_root.push(RootReport {
                 root: root.path.clone(),
@@ -204,7 +205,7 @@ impl<'a> Runner<'a> {
         })
     }
 
-    fn run_root(&self, root: &RootConfig) {
+    fn run_root(&self, root: &RootConfig, digest: &str) {
         let walker = WalkDir::new(&root.path)
             .follow_links(false)
             .into_iter()
@@ -214,14 +215,14 @@ impl<'a> Runner<'a> {
             if !entry.file_type().is_file() || self.stop.load(Ordering::Relaxed) {
                 return;
             }
-            if let Err(e) = self.consider(root, entry.path()) {
+            if let Err(e) = self.consider(root, entry.path(), digest) {
                 self.counters.errors.fetch_add(1, Ordering::Relaxed);
                 tracing::warn!("{}: {e:#}", entry.path().display());
             }
         });
     }
 
-    fn consider(&self, root: &RootConfig, path: &Path) -> Result<()> {
+    fn consider(&self, root: &RootConfig, path: &Path, digest: &str) -> Result<()> {
         if !has_image_extension(path) {
             return Ok(());
         }
@@ -251,10 +252,14 @@ impl<'a> Runner<'a> {
         // Fast path: unchanged since we last decided something about it.
         {
             let manifest = self.manifest.lock().unwrap();
-            if let Ok(Some((known, outcome))) = manifest.fingerprint(path) {
+            if let Ok(Some((known, outcome, digest))) = manifest.fingerprint(path) {
                 // `Pending` means a run died mid-file and `Error` means it failed:
-                // both are retried. Everything else is settled.
-                if known == fingerprint && !matches!(outcome, Outcome::Pending | Outcome::Error) {
+                // both are retried. A row decided under different settings is also
+                // re-evaluated, so changing the config takes effect immediately.
+                if known == fingerprint
+                    && digest == digest
+                    && !matches!(outcome, Outcome::Pending | Outcome::Error)
+                {
                     self.counters.skipped.fetch_add(1, Ordering::Relaxed);
                     return Ok(());
                 }
@@ -286,7 +291,14 @@ impl<'a> Runner<'a> {
         // the manifest no longer knows it (restore, rebuild, different server).
         if let Some(info) = &content.jpeg {
             if info.has_tool_marker() {
-                self.record_skip(path, root, &content, fingerprint, Reason::AlreadyProcessed)?;
+                self.record_skip(
+                    path,
+                    root,
+                    &content,
+                    fingerprint,
+                    Reason::AlreadyProcessed,
+                    digest,
+                )?;
                 return Ok(());
             }
         }
@@ -313,6 +325,7 @@ impl<'a> Runner<'a> {
                 &content,
                 fingerprint,
                 decision.reason.unwrap_or(Reason::FormatNotHandled),
+                digest,
             )?;
             return Ok(());
         }
@@ -320,7 +333,7 @@ impl<'a> Runner<'a> {
         // A dry run goes through the real encoder and then throws the result away:
         // that is the only way to report the exact saving per file before touching
         // anything, which is what a pilot review needs.
-        self.optimise(root, path, &content, &decision, fingerprint)
+        self.optimise(root, path, &content, &decision, fingerprint, digest)
     }
 
     fn optimise(
@@ -330,15 +343,16 @@ impl<'a> Runner<'a> {
         content: &Content,
         decision: &Decision,
         fingerprint: Fingerprint,
+        digest: &str,
     ) -> Result<()> {
         let temp = replace::temp_path(path);
-        match self.try_optimise(root, path, content, decision, &temp, fingerprint) {
+        match self.try_optimise(root, path, content, decision, &temp, fingerprint, digest) {
             Ok(_) => Ok(()),
             Err(e) => {
                 let _ = std::fs::remove_file(&temp);
                 tracing::warn!("{}: {e:#}", path.display());
                 self.counters.errors.fetch_add(1, Ordering::Relaxed);
-                let mut record = self.base_record(path, root, content, fingerprint);
+                let mut record = self.base_record(path, root, content, fingerprint, digest);
                 record.action = decision.action_label().to_string();
                 record.outcome = Outcome::Error;
                 record.detail = Some(format!("{e:#}"));
@@ -355,6 +369,7 @@ impl<'a> Runner<'a> {
         decision: &Decision,
         temp: &Path,
         fingerprint: Fingerprint,
+        digest: &str,
     ) -> Result<()> {
         let size_before = fingerprint.size;
         let meta = replace::read_meta(path)?;
@@ -463,6 +478,7 @@ impl<'a> Runner<'a> {
                 content,
                 decision,
                 fingerprint,
+                digest,
                 size_before,
                 size_after,
                 "result is not smaller",
@@ -476,6 +492,7 @@ impl<'a> Runner<'a> {
                 content,
                 decision,
                 fingerprint,
+                digest,
                 size_before,
                 size_after,
                 &format!("gain {gain_percent:.1}% is below the {min_gain:.1}% margin"),
@@ -491,6 +508,7 @@ impl<'a> Runner<'a> {
                         content,
                         decision,
                         fingerprint,
+                        digest,
                         size_before,
                         size_after,
                         &format!("ssimu2 {measured:.1} is below the floor {floor:.1}"),
@@ -534,7 +552,7 @@ impl<'a> Runner<'a> {
         // every file for a value nothing needs, since path plus the stored
         // fingerprint already identify the row.
         let sha_after = replace::sha256_file(path).ok();
-        let mut record = self.base_record(path, root, content, fingerprint);
+        let mut record = self.base_record(path, root, content, fingerprint, digest);
         record.sha_before = None;
         // The fast path must look at the file as it is *now*, not as it was.
         if let Ok(md) = std::fs::symlink_metadata(path) {
@@ -674,13 +692,14 @@ impl<'a> Runner<'a> {
         content: &Content,
         decision: &Decision,
         fingerprint: Fingerprint,
+        digest: &str,
         size_before: u64,
         size_after: u64,
         why: &str,
     ) -> Result<()> {
         self.counters.rejected.fetch_add(1, Ordering::Relaxed);
         tracing::debug!("{}: keeping original ({why})", path.display());
-        let mut record = self.base_record(path, root, content, fingerprint);
+        let mut record = self.base_record(path, root, content, fingerprint, digest);
         record.action = decision.action_label().to_string();
         record.size_after = Some(size_after);
         record.outcome = Outcome::Rejected;
@@ -697,9 +716,10 @@ impl<'a> Runner<'a> {
         content: &Content,
         fingerprint: Fingerprint,
         reason: Reason,
+        digest: &str,
     ) -> Result<()> {
         self.counters.skipped.fetch_add(1, Ordering::Relaxed);
-        let mut record = self.base_record(path, root, content, fingerprint);
+        let mut record = self.base_record(path, root, content, fingerprint, digest);
         record.action = "skip".to_string();
         record.reason = Some(reason.as_str().to_string());
         record.outcome = Outcome::Skipped;
@@ -713,6 +733,7 @@ impl<'a> Runner<'a> {
         root: &RootConfig,
         content: &Content,
         fingerprint: Fingerprint,
+        digest: &str,
     ) -> FileRecord {
         FileRecord {
             path: path.to_path_buf(),
@@ -733,6 +754,7 @@ impl<'a> Runner<'a> {
                 .map(|j| j.quality_confident)
                 .unwrap_or(false),
             run_id: Some(self.run_id),
+            cfg_hash: digest.to_string(),
             ..Default::default()
         }
     }

@@ -16,7 +16,7 @@ use chrono::Utc;
 use rusqlite::{params, Connection, OptionalExtension};
 use serde::{Deserialize, Serialize};
 
-pub const SCHEMA_VERSION: i64 = 2;
+pub const SCHEMA_VERSION: i64 = 3;
 
 /// How a file ended up.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
@@ -90,6 +90,9 @@ pub struct FileRecord {
     pub outcome: Outcome,
     pub detail: Option<String>,
     pub run_id: Option<i64>,
+    /// Digest of the settings that produced this decision. A row whose digest no
+    /// longer matches is re-evaluated rather than skipped.
+    pub cfg_hash: String,
 }
 
 /// The cheap identity of a file, used for the fast path.
@@ -209,6 +212,7 @@ impl Manifest {
                 encoder           TEXT,
                 encoder_version   TEXT,
                 settings          TEXT,
+                cfg_hash          TEXT NOT NULL DEFAULT '',
                 outcome           TEXT NOT NULL DEFAULT 'pending',
                 detail            TEXT,
                 run_id            INTEGER,
@@ -272,12 +276,13 @@ impl Manifest {
     }
 
     /// The fingerprint of a known file, if any.
-    pub fn fingerprint(&self, path: &Path) -> Result<Option<(Fingerprint, Outcome)>> {
+    /// Returns (fingerprint, outcome, config digest) for a known path.
+    pub fn fingerprint(&self, path: &Path) -> Result<Option<(Fingerprint, Outcome, String)>> {
         let key = path.to_string_lossy();
         let row = self
             .conn
             .query_row(
-                "SELECT fp_size, fp_mtime_ns, fp_inode, outcome FROM files WHERE path = ?1",
+                "SELECT fp_size, fp_mtime_ns, fp_inode, outcome, cfg_hash FROM files WHERE path = ?1",
                 params![key],
                 |r| {
                     Ok((
@@ -287,6 +292,7 @@ impl Manifest {
                             inode: r.get::<_, i64>(2)? as u64,
                         },
                         Outcome::from_str(&r.get::<_, String>(3)?),
+                        r.get::<_, String>(4)?,
                     ))
                 },
             )
@@ -302,7 +308,7 @@ impl Manifest {
                 "SELECT root, size_before, mtime_ns, inode, size_after, sha_before, sha_after,
                         content_format, width, height, quality, quality_confident, action,
                         reason, ssimu2, encoder, encoder_version, settings, outcome, detail, run_id,
-                        fp_size, fp_mtime_ns, fp_inode
+                        fp_size, fp_mtime_ns, fp_inode, cfg_hash
                  FROM files WHERE path = ?1",
                 params![key],
                 |r| {
@@ -332,6 +338,7 @@ impl Manifest {
                         fp_size: r.get::<_, i64>(21)? as u64,
                         fp_mtime_ns: r.get(22)?,
                         fp_inode: r.get::<_, i64>(23)? as u64,
+                        cfg_hash: r.get::<_, String>(24)?,
                     })
                 },
             )
@@ -360,10 +367,10 @@ impl Manifest {
                 path, root, size_before, mtime_ns, inode, fp_size, fp_mtime_ns, fp_inode,
                 size_after, sha_before, sha_after, content_format, width, height, quality,
                 quality_confident, action, reason, ssimu2, encoder, encoder_version, settings,
-                outcome, detail, run_id, ts
+                outcome, detail, run_id, ts, cfg_hash
             ) VALUES (
                 ?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17,
-                ?18, ?19, ?20, ?21, ?22, ?23, ?24, ?25, ?26
+                ?18, ?19, ?20, ?21, ?22, ?23, ?24, ?25, ?26, ?27
             )
             ON CONFLICT(path) DO UPDATE SET
                 root=excluded.root, size_before=excluded.size_before, mtime_ns=excluded.mtime_ns,
@@ -377,7 +384,7 @@ impl Manifest {
                 reason=excluded.reason, ssimu2=excluded.ssimu2, encoder=excluded.encoder,
                 encoder_version=excluded.encoder_version, settings=excluded.settings,
                 outcome=excluded.outcome, detail=excluded.detail, run_id=excluded.run_id,
-                ts=excluded.ts
+                ts=excluded.ts, cfg_hash=excluded.cfg_hash
             "#,
             params![
                 r.path.to_string_lossy(),
@@ -406,6 +413,7 @@ impl Manifest {
                 r.detail,
                 r.run_id,
                 Utc::now().to_rfc3339(),
+                r.cfg_hash,
             ],
         )?;
         Ok(())
@@ -557,7 +565,7 @@ impl Manifest {
             "SELECT path, root, size_before, mtime_ns, inode, size_after, sha_before,
                     sha_after, content_format, width, height, quality, quality_confident,
                     action, reason, ssimu2, encoder, encoder_version, settings, outcome,
-                    detail, run_id, ts, fp_size, fp_mtime_ns, fp_inode FROM files",
+                    detail, run_id, ts, fp_size, fp_mtime_ns, fp_inode, cfg_hash FROM files",
         )?;
         let rows = stmt.query_map([], |r| {
             Ok(serde_json::json!({
@@ -693,6 +701,7 @@ impl Manifest {
                 outcome: Outcome::from_str(get_str("outcome").unwrap_or("skipped")),
                 detail: get_str("detail").map(|s| s.to_string()),
                 run_id: get_i64("run_id"),
+                cfg_hash: get_str("cfg_hash").unwrap_or("").to_string(),
             };
             // Do not clobber a row that already knows more than the snapshot.
             if self
@@ -711,9 +720,10 @@ impl Manifest {
                 "INSERT INTO files (path, root, size_before, mtime_ns, inode, size_after,
                     sha_before, sha_after, content_format, width, height, quality,
                     quality_confident, action, reason, ssimu2, encoder, encoder_version,
-                    settings, outcome, detail, run_id, ts, fp_size, fp_mtime_ns, fp_inode)
+                    settings, outcome, detail, run_id, ts, fp_size, fp_mtime_ns, fp_inode,
+                    cfg_hash)
                  VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14,?15,?16,?17,?18,
-                    ?19,?20,?21,?22,?23,?24,?25,?26)",
+                    ?19,?20,?21,?22,?23,?24,?25,?26,?27)",
                 params![
                     record.path.to_string_lossy(),
                     record.root.to_string_lossy(),
@@ -741,6 +751,7 @@ impl Manifest {
                     record.fp_size as i64,
                     record.fp_mtime_ns,
                     record.fp_inode as i64,
+                    record.cfg_hash,
                 ],
             )?;
             imported += 1;
@@ -852,6 +863,7 @@ mod tests {
         let fp = m.fingerprint(&r.path).unwrap().unwrap();
         assert_eq!(fp.0, Fingerprint::from(&r));
         assert_eq!(fp.1, Outcome::Changed);
+        assert_eq!(fp.2, "", "a row without a digest must be re-evaluated once");
         let back = m.get(&r.path).unwrap().unwrap();
         assert_eq!(back.size_after, Some(400));
         assert_eq!(back.sha_after.as_deref(), Some("bb"));
@@ -865,6 +877,19 @@ mod tests {
         let mut changed = Fingerprint::from(&r);
         changed.mtime_ns += 1;
         assert_ne!(m.fingerprint(&r.path).unwrap().unwrap().0, changed);
+    }
+
+    #[test]
+    fn config_digest_round_trips_and_changes() {
+        let (_dir, m) = temp_manifest();
+        let mut r = record("/home/example/www/a.jpg");
+        r.cfg_hash = "abc123".into();
+        m.upsert(&r).unwrap();
+        assert_eq!(m.fingerprint(&r.path).unwrap().unwrap().2, "abc123");
+        let mut changed = r.clone();
+        changed.cfg_hash = "def456".into();
+        m.upsert(&changed).unwrap();
+        assert_eq!(m.fingerprint(&r.path).unwrap().unwrap().2, "def456");
     }
 
     #[test]

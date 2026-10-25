@@ -376,3 +376,55 @@ fn manifest_records_survive_a_new_inode_and_mtime() {
         "a restored file with our marker must be recognised without the manifest"
     );
 }
+
+#[test]
+fn changing_the_config_re_evaluates_settled_files() {
+    let Some(engines) = engines() else { return };
+    let _serial = serial();
+    let dir = tempfile::tempdir().unwrap();
+    let root = dir.path().join("media");
+    std::fs::create_dir_all(&root).unwrap();
+    let image = root.join("lean.jpg");
+    // A file at q82: below the re-encode threshold, so it is only interesting for
+    // the lossless pass.
+    make_jpeg(&engines.vips, &image, 800, 600, 82);
+
+    // `write_config` sets lossless_pass = true; write the "off" variant first.
+    let config_path = write_config(dir.path(), &root, "", &engines);
+    let text = std::fs::read_to_string(&config_path).unwrap();
+    std::fs::write(
+        &config_path,
+        text.replace("lossless_pass = true", "lossless_pass = false"),
+    )
+    .unwrap();
+
+    let cfg = load(&config_path, dir.path());
+    let tools = Tools::discover(&cfg.engine);
+    let first = run::run(&cfg, &tools, RunOptions { dry_run: false }, "test").unwrap();
+    assert_eq!(
+        first.totals.files_changed, 0,
+        "with the lossless pass off there is nothing to do"
+    );
+    let settled = Manifest::open(&dir.path().join("state.db")).unwrap();
+    assert_eq!(
+        settled.count_files().unwrap(),
+        1,
+        "the decision is remembered"
+    );
+
+    // Flip the setting. The stored row's digest no longer matches, so the file must
+    // be reconsidered instead of being skipped by the fast path.
+    std::fs::write(&config_path, &text).unwrap();
+    let cfg2 = load(&config_path, dir.path());
+    let second = run::run(&cfg2, &tools, RunOptions { dry_run: false }, "test").unwrap();
+    let settled_after = Manifest::open(&dir.path().join("state.db")).unwrap();
+    let row = settled_after.get(&image).unwrap().unwrap();
+    assert_ne!(
+        row.cfg_hash, "",
+        "the row must carry the digest that produced it"
+    );
+    assert!(
+        second.totals.files_changed + second.totals.files_rejected > 0,
+        "a config change must trigger re-evaluation, not a silent skip"
+    );
+}
