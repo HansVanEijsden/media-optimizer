@@ -252,12 +252,12 @@ impl<'a> Runner<'a> {
         // Fast path: unchanged since we last decided something about it.
         {
             let manifest = self.manifest.lock().unwrap();
-            if let Ok(Some((known, outcome, digest))) = manifest.fingerprint(path) {
+            if let Ok(Some((known, outcome, row_digest))) = manifest.fingerprint(path) {
                 // `Pending` means a run died mid-file and `Error` means it failed:
                 // both are retried. A row decided under different settings is also
                 // re-evaluated, so changing the config takes effect immediately.
                 if known == fingerprint
-                    && digest == digest
+                    && row_digest == digest
                     && !matches!(outcome, Outcome::Pending | Outcome::Error)
                 {
                     self.counters.skipped.fetch_add(1, Ordering::Relaxed);
@@ -361,6 +361,7 @@ impl<'a> Runner<'a> {
         }
     }
 
+    #[allow(clippy::too_many_arguments)]
     fn try_optimise(
         &self,
         root: &RootConfig,
