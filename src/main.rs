@@ -341,21 +341,39 @@ fn schedule(cfg: &Config, tools: &Tools) -> Result<()> {
         overdue
     };
 
+    // Burn-down: keep working until a run ends because the tree is exhausted,
+    // instead of stopping at the nightly time limit and waiting a day. Meant for
+    // a one-off backlog on a host that can spare the CPU; off by default.
+    let burn_down = std::env::var("MEDIAOPT_BURNDOWN")
+        .map(|v| v == "1" || v.eq_ignore_ascii_case("true"))
+        .unwrap_or(false);
+    if burn_down {
+        tracing::info!("burn-down mode: a run that hits max_runtime starts another");
+    }
     let job = || -> Result<()> {
-        if sched::shutdown_requested() {
-            return Ok(());
+        loop {
+            if sched::shutdown_requested() {
+                return Ok(());
+            }
+            let report = run::run(cfg, tools, RunOptions { dry_run: false }, "scheduled")?;
+            println!("{}", report::summary_line(&report));
+            let _ = report::write_run_file(
+                &report,
+                cfg.report_dir(),
+                &mediaopt::hostname(),
+                "scheduled",
+                &tools.describe(),
+            );
+            let _ = report::prune(cfg.report_dir(), cfg.state.report_days);
+            let more_work = report.stopped == Some("max_runtime");
+            if !(burn_down && more_work) {
+                return Ok(());
+            }
+            tracing::info!("run hit max_runtime; starting another (burn-down)");
+            if !sched::sleep_interruptible(Duration::from_secs(30), Duration::from_secs(5)) {
+                return Ok(());
+            }
         }
-        let report = run::run(cfg, tools, RunOptions { dry_run: false }, "scheduled")?;
-        println!("{}", report::summary_line(&report));
-        let _ = report::write_run_file(
-            &report,
-            cfg.report_dir(),
-            &mediaopt::hostname(),
-            "scheduled",
-            &tools.describe(),
-        );
-        let _ = report::prune(cfg.report_dir(), cfg.state.report_days);
-        Ok(())
     };
 
     if overdue {

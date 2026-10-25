@@ -130,10 +130,6 @@ pub fn run_forever<F>(schedule: Schedule, tick: Duration, mut job: F) -> Result<
 where
     F: FnMut() -> Result<()>,
 {
-    // Catch up first if the last run is overdue.
-    if schedule.is_overdue(None, Local::now()) {
-        tracing::info!("no previous run recorded; starting immediately");
-    }
     loop {
         let now = Local::now();
         let next = schedule.next_after(now);
