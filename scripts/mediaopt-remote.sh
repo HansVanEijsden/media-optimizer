@@ -131,16 +131,18 @@ total=$(wc -l < "$work/candidates.tsv" | tr -d ' ')
 say "$total file(s) need work"
 [ "$total" -gt 0 ] || { say "nothing to do"; exit 0; }
 
+# One split instead of slicing the whole list per batch.
+split -l "$batch" "$work/candidates.tsv" "$work/batch-"
+batch_files=$(ls "$work"/batch-* | sort)
+
 done_count=0
 batch_no=0
 while :; do
   batch_no=$((batch_no + 1))
-  from=$(( (batch_no - 1) * batch + 1 ))
-  to=$(( batch_no * batch ))
-  guard=$(awk -F'\t' -v f="$from" 'NR>=f && NR<=f {print "1"; exit}' "$work/candidates.tsv")
-  [ -n "$guard" ] || break
+  batch_file=$(printf '%s\n' "$batch_files" | sed -n "${batch_no}p")
+  [ -n "$batch_file" ] || break
 
-  sed -n "${from},${to}p" "$work/candidates.tsv" > "$work/batch.tsv"
+  cp "$batch_file" "$work/batch.tsv"
   n=$(wc -l < "$work/batch.tsv" | tr -d ' ')
   say "batch $batch_no: $n file(s)"
 
@@ -162,7 +164,7 @@ while :; do
       --jobs "$jobs"
 
   t2=$(date +%s)
-  say "  download $(( t1 - t0 ))s, encode $(( $(date +%s) - t2 ))s"
+  say "  download $(( t1 - t0 ))s, encode $(( t2 - t1 ))s"
   # Upload the results and let the server verify and install them.
   if [ -n "$(ls -A "$work/out" 2>/dev/null)" ]; then
     ssh -o BatchMode=yes "$host" "rm -rf $stage_host && mkdir -p $stage_host"
