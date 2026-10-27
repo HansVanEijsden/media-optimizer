@@ -474,3 +474,54 @@ fn a_rejected_file_leaves_no_temporary_behind() {
         "temporary files left behind: {leftovers:?}"
     );
 }
+
+#[test]
+fn an_oversized_image_is_downscaled() {
+    let Some(engines) = engines() else { return };
+    let _serial = serial();
+    let dir = tempfile::tempdir().unwrap();
+    let root = dir.path().join("media");
+    std::fs::create_dir_all(&root).unwrap();
+    let image = root.join("huge.jpg");
+    // 3000 px wide with max_dimension 2048 forces the resize path, which builds
+    // its output filename differently from the plain re-encode. That path wrote to
+    // a temporary name ending in .tmp, libvips refused it as an unknown format, and
+    // every oversized upload failed while the tests all passed because none of
+    // them resized anything.
+    make_jpeg(&engines.vips, &image, 3000, 2000, 98);
+
+    let config_path = write_config(dir.path(), &root, "", &engines);
+    let cfg = load(&config_path, dir.path());
+    let tools = Tools::discover(&cfg.engine);
+
+    let report = run::run(&cfg, &tools, RunOptions { dry_run: false }, "test").unwrap();
+    assert_eq!(report.totals.errors, 0, "resizing must not error");
+    assert_eq!(report.totals.files_changed, 1);
+
+    let width = mediaopt::engine::header_field(&tools, &image, "width")
+        .unwrap()
+        .and_then(|v| v.parse::<u32>().ok())
+        .unwrap();
+    let height = mediaopt::engine::header_field(&tools, &image, "height")
+        .unwrap()
+        .and_then(|v| v.parse::<u32>().ok())
+        .unwrap();
+    assert!(
+        width.max(height) <= 2048,
+        "longest side should be 2048 or less, got {width}x{height}"
+    );
+    assert!(
+        width >= 2047,
+        "the downscale should reach the limit, got {width}"
+    );
+
+    // And no leftover partial files.
+    for entry in walkdir::WalkDir::new(&root).into_iter().flatten() {
+        let name = entry.file_name().to_string_lossy().to_string();
+        assert!(
+            !name.contains("mediaopt") && !name.ends_with(".part.jpg"),
+            "leftover: {}",
+            entry.path().display()
+        );
+    }
+}

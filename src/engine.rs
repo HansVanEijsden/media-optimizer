@@ -250,57 +250,87 @@ const SAVER_FLAGS: [&str; 5] = [
 
 /// Encode a JPEG, optionally downscaling. Writes to `dst` (a temporary file).
 ///
-/// Arguments are built as `OsString`, never as `String`: a real tree contains
-/// file names that are not valid UTF-8, and `display()` would rewrite those bytes
-/// into U+FFFD, at which point libvips reports that the input does not exist.
+/// Arguments are built as `OsString`, never as `String`: a real tree contains file
+/// names that are not valid UTF-8, and `display()` would rewrite those bytes into
+/// U+FFFD, at which point libvips reports that the input does not exist.
+///
+/// The resize case is two explicit steps instead of the `output.jpg[options]`
+/// shorthand. That shorthand cannot express `keep=icc,exif`, because libvips splits
+/// the option string on commas and then treats `exif` as a filename, so the resize
+/// path silently used different metadata rules from the plain re-encode. Two
+/// commands also mean one definition of the saver options for both paths.
 pub fn encode_jpeg(tools: &Tools, src: &Path, dst: &Path, o: &JpegEncodeOpts) -> Result<()> {
     use std::ffi::OsString;
-    use std::os::unix::ffi::OsStrExt;
+    use std::os::unix::ffi::{OsStrExt, OsStringExt};
 
     let vips = tools.vips()?;
-    let mut args: Vec<OsString> = Vec::new();
+
+    // argv for `vips jpegsave <in> <out>`, with the density-critical flags.
+    let jpegsave_args = |input: &Path, output: &Path| -> Vec<OsString> {
+        let mut args: Vec<OsString> = Vec::new();
+        args.push(OsString::from("jpegsave"));
+        args.push(input.as_os_str().to_os_string());
+        args.push(output.as_os_str().to_os_string());
+        for (key, value) in o.saver_pairs() {
+            args.push(OsString::from(format!("--{key}")));
+            if !SAVER_FLAGS.contains(&key.as_str()) {
+                args.push(OsString::from(value));
+            }
+        }
+        args
+    };
+
+    let with_suffix = |path: &Path, suffix: &str| -> std::path::PathBuf {
+        let mut bytes = path.as_os_str().as_bytes().to_vec();
+        bytes.extend_from_slice(suffix.as_bytes());
+        OsString::from_vec(bytes).into()
+    };
 
     match o.resize_to {
         Some(target) if o.source_longest > target => {
             let scale = target as f64 / o.source_longest as f64;
-            // libvips parses saver options from the output filename, which is how
-            // the CLI can resize and save with full control in one pass. The
-            // brackets are appended to the path as bytes so a name that is not
-            // valid UTF-8 survives.
-            let bracket = o
-                .saver_pairs()
-                .iter()
-                .map(|(k, v)| format!("{k}={v}"))
-                .collect::<Vec<_>>()
-                .join(",");
-            let mut with_options = dst.as_os_str().as_bytes().to_vec();
-            with_options.push(b'[');
-            with_options.extend_from_slice(bracket.as_bytes());
-            with_options.push(b']');
-            args.push(OsString::from("resize"));
-            args.push(src.as_os_str().to_os_string());
-            let out_arg: OsString = std::os::unix::ffi::OsStringExt::from_vec(with_options);
-            args.push(out_arg);
-            args.push(OsString::from(format!("{scale:.8}")));
-            args.push(OsString::from("--kernel"));
-            args.push(OsString::from(o.kernel.clone()));
-        }
-        _ => {
-            args.push(OsString::from("jpegsave"));
-            args.push(src.as_os_str().to_os_string());
-            args.push(dst.as_os_str().to_os_string());
-            for (key, value) in o.saver_pairs() {
-                args.push(OsString::from(format!("--{key}")));
-                if !SAVER_FLAGS.contains(&key.as_str()) {
-                    args.push(OsString::from(value));
-                }
+            // libvips picks the saver from the output extension, so the final JPEG
+            // must be written to a name it recognises; the intermediate is a native
+            // vips image so no metadata is lost between the two steps.
+            let intermediate = with_suffix(dst, ".part.v");
+            let encoded = with_suffix(dst, ".part.jpg");
+
+            let mut resize_cmd = command(&vips.path);
+            resize_cmd
+                .arg("resize")
+                .arg(src)
+                .arg(&intermediate)
+                .arg(format!("{scale:.8}"))
+                .arg("--kernel")
+                .arg(&o.kernel);
+            if let Err(e) = run(resize_cmd, "libvips resize")
+                .with_context(|| format!("resizing {}", src.display()))
+            {
+                let _ = std::fs::remove_file(&intermediate);
+                return Err(e);
+            }
+
+            let mut save_cmd = command(&vips.path);
+            save_cmd.args(jpegsave_args(&intermediate, &encoded));
+            let saved = run(save_cmd, "libvips JPEG encode")
+                .with_context(|| format!("encoding {}", src.display()));
+            let _ = std::fs::remove_file(&intermediate);
+            saved?;
+
+            if let Err(e) = std::fs::rename(&encoded, dst) {
+                let _ = std::fs::remove_file(&encoded);
+                return Err(e).with_context(|| {
+                    format!("moving {} onto {}", encoded.display(), dst.display())
+                });
             }
         }
+        _ => {
+            let mut cmd = command(&vips.path);
+            cmd.args(jpegsave_args(src, dst));
+            run(cmd, "libvips JPEG encode")
+                .with_context(|| format!("encoding {}", src.display()))?;
+        }
     }
-
-    let mut cmd = command(&vips.path);
-    cmd.args(&args);
-    run(cmd, "libvips JPEG encode").with_context(|| format!("encoding {}", src.display()))?;
     Ok(())
 }
 
