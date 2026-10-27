@@ -249,36 +249,50 @@ const SAVER_FLAGS: [&str; 5] = [
 ];
 
 /// Encode a JPEG, optionally downscaling. Writes to `dst` (a temporary file).
+///
+/// Arguments are built as `OsString`, never as `String`: a real tree contains
+/// file names that are not valid UTF-8, and `display()` would rewrite those bytes
+/// into U+FFFD, at which point libvips reports that the input does not exist.
 pub fn encode_jpeg(tools: &Tools, src: &Path, dst: &Path, o: &JpegEncodeOpts) -> Result<()> {
+    use std::ffi::OsString;
+    use std::os::unix::ffi::OsStrExt;
+
     let vips = tools.vips()?;
-    let mut args: Vec<String> = Vec::new();
+    let mut args: Vec<OsString> = Vec::new();
 
     match o.resize_to {
         Some(target) if o.source_longest > target => {
             let scale = target as f64 / o.source_longest as f64;
             // libvips parses saver options from the output filename, which is how
-            // the CLI can resize and save with full control in one pass.
+            // the CLI can resize and save with full control in one pass. The
+            // brackets are appended to the path as bytes so a name that is not
+            // valid UTF-8 survives.
             let bracket = o
                 .saver_pairs()
                 .iter()
                 .map(|(k, v)| format!("{k}={v}"))
                 .collect::<Vec<_>>()
                 .join(",");
-            args.push("resize".into());
-            args.push(src.display().to_string());
-            args.push(format!("{}[{}]", dst.display(), bracket));
-            args.push(format!("{scale:.8}"));
-            args.push("--kernel".into());
-            args.push(o.kernel.clone());
+            let mut with_options = dst.as_os_str().as_bytes().to_vec();
+            with_options.push(b'[');
+            with_options.extend_from_slice(bracket.as_bytes());
+            with_options.push(b']');
+            args.push(OsString::from("resize"));
+            args.push(src.as_os_str().to_os_string());
+            let out_arg: OsString = std::os::unix::ffi::OsStringExt::from_vec(with_options);
+            args.push(out_arg);
+            args.push(OsString::from(format!("{scale:.8}")));
+            args.push(OsString::from("--kernel"));
+            args.push(OsString::from(o.kernel.clone()));
         }
         _ => {
-            args.push("jpegsave".into());
-            args.push(src.display().to_string());
-            args.push(dst.display().to_string());
+            args.push(OsString::from("jpegsave"));
+            args.push(src.as_os_str().to_os_string());
+            args.push(dst.as_os_str().to_os_string());
             for (key, value) in o.saver_pairs() {
-                args.push(format!("--{key}"));
+                args.push(OsString::from(format!("--{key}")));
                 if !SAVER_FLAGS.contains(&key.as_str()) {
-                    args.push(value);
+                    args.push(OsString::from(value));
                 }
             }
         }
