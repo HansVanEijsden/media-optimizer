@@ -181,6 +181,8 @@ manifest. See [rollback](docs/rollback.md) for the restore procedure.
 
 ## Documentation
 
+- [Status](docs/STATUS.md): where the rollout stands right now — what works, the
+  decisions taken, what is open, and the next step.
 - [Architecture](docs/architecture.md): modules, data flow, manifest schema,
   recovery, threading and budgets.
 - [Operations](docs/operations.md): configuration, deployment, scheduling,
