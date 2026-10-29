@@ -9,12 +9,12 @@ was decided, what is open, and what to do next. The design lives in
 
 ## Where it runs
 
-Four hosts, all on the same 0.1.0 image (built 2026-10-27, 86 MB), each with its
-own TOML file and its own nightly slot. That image predates the budget fix of
-2026-10-29, so the per-run semantics described below are `main`, not yet the
-running containers. Host names, client names and paths are deliberately absent
-from this repository; the labels below are the ones used everywhere else in the
-docs.
+Four hosts, all on `ghcr.io/hansvaneijsden/media-optimizer:sha-3992aca` (built
+2026-10-29, 86 MB, index digest `sha256:0e6128…`), each with its own TOML file
+and its own nightly slot. The image is multi-arch and pulls anonymously from
+GHCR; the binary inside all four containers is byte-identical. Host names,
+client names and paths are deliberately absent from this repository; the labels
+below are the ones used everywhere else in the docs.
 
 | label | what it is | roots | nightly slot | burn-down |
 |---|---|---|---|---|
@@ -159,8 +159,10 @@ Two other things worth recording:
 
 ## Next step
 
-1. Rebuild the image and roll it out: all four hosts still run the 2026-10-27
-   build, so the per-run budget semantics only become real once they do.
+1. Watch the first runs on the new image (nightly 03:15-04:45). The fix is
+   proven on the canary with a two-root self-test; the summary lines are the
+   production confirmation. On settled hosts `changed=` stays at its usual 0 or
+   small number, and `stopped=` now means a run total, not a root.
 2. Decide on item 1 (legacy files) and item 5 (thumbnail trees); both are
    housekeeping rather than engineering.
 3. Then item 3: settle a file that fails to decode, so the nightly `errors=` line
@@ -173,7 +175,7 @@ Two other things worth recording:
 
 ```console
 # one-line summary per host, straight from the manifest
-mediaopt report --totals
+mediaopt report
 
 # what the last runs did
 docker logs mediaopt | grep -E '^mediaopt (run|dry-run)'
