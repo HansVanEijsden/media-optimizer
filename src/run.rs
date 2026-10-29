@@ -163,14 +163,18 @@ impl<'a> Runner<'a> {
                 }
             }
             // A root may carry a tighter budget than the run, which is how a
-            // staged first pass is kept to one year at a time.
-            *self.budget.lock().unwrap() = Budget::new(
-                root.max_bytes_per_run
-                    .unwrap_or(self.cfg.limits.max_bytes_per_run),
-                root.max_files_per_run
-                    .unwrap_or(self.cfg.limits.max_files_per_run),
-                decide::parse_duration(&self.cfg.limits.max_runtime),
-            );
+            // staged first pass is kept to one year at a time. Only the limits
+            // travel with the root: the deadline and the counters were fixed
+            // when the run started, so this cannot restart the clock.
+            {
+                let mut budget = self.budget.lock().unwrap();
+                budget.refit(
+                    root.max_bytes_per_run
+                        .unwrap_or(self.cfg.limits.max_bytes_per_run),
+                    root.max_files_per_run
+                        .unwrap_or(self.cfg.limits.max_files_per_run),
+                );
+            }
             let digest = self.cfg.decision_digest(&root);
             let before = self.counters.snapshot();
             self.run_root(&root, &digest);

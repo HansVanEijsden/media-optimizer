@@ -1,6 +1,6 @@
 # Status
 
-_Snapshot taken 2026-10-28. This page is the operational state: what works, what
+_Snapshot taken 2026-10-29. This page is the operational state: what works, what
 was decided, what is open, and what to do next. The design lives in
 [architecture.md](architecture.md), the format details in
 [formats.md](formats.md), the measurements behind the defaults in
@@ -10,9 +10,11 @@ was decided, what is open, and what to do next. The design lives in
 ## Where it runs
 
 Four hosts, all on the same 0.1.0 image (built 2026-10-27, 86 MB), each with its
-own TOML file and its own nightly slot. Host names, client names and paths are
-deliberately absent from this repository; the labels below are the ones used
-everywhere else in the docs.
+own TOML file and its own nightly slot. That image predates the budget fix of
+2026-10-29, so the per-run semantics described below are `main`, not yet the
+running containers. Host names, client names and paths are deliberately absent
+from this repository; the labels below are the ones used everywhere else in the
+docs.
 
 | label | what it is | roots | nightly slot | burn-down |
 |---|---|---|---|---|
@@ -42,9 +44,11 @@ everywhere else in the docs.
   via `oxipng`, WebP lossless only. The format is sniffed from magic bytes: on a
   real tree 14% of files named `.png` are JPEGs.
 - **Resource discipline.** `nice 19`, idle I/O class, two jobs on a three-core
-  host, a single-instance lock, a free-space reserve, per-run byte/file budgets,
-  and a nightly slot with a 90-minute catch-up window. A run honours SIGTERM, so
-  `docker stop` takes seconds instead of the full grace period.
+  host, a single-instance lock, a free-space reserve, per-run byte/file budgets
+  and one wall-clock deadline for the whole run — a root may tighten the byte and
+  file allowance, never the clock — and a nightly slot with a 90-minute catch-up
+  window. A run honours SIGTERM, so `docker stop` takes seconds instead of the
+  full grace period.
 - **Remote mode.** `scan` on the server, `encode-batch` on a fast machine,
   `apply-staged` back on the server, which re-verifies every result before it
   installs it. Used to clear a 581,000-file backlog from a laptop at roughly ten
@@ -52,7 +56,7 @@ everywhere else in the docs.
   `scripts/mediaopt-remote.sh`.
 - **Delivery.** Multi-stage Dockerfile, non-root, read-only root filesystem,
   all capabilities dropped, per-host compose file. CI runs `fmt`, `clippy` and
-  the tests (69 unit, 8 integration); the release workflow builds only when
+  the tests (71 unit, 9 integration); the release workflow builds only when
   code, the Dockerfile or the Cargo manifests change, so a documentation commit
   never produces an image.
 
@@ -77,8 +81,9 @@ Two other things worth recording:
 
 - The tool's own footprint is small and known: the manifest is roughly 350 bytes
   per row (18-63 MB on these hosts), the image is 86 MB, and no temporary files
-  survive a run. That last property was measured, not assumed; see the first open
-  item below.
+  survive a run. That last property was measured, not assumed: the reject path
+  removes its own output, a run sweeps anything older than thirty minutes, and an
+  integration test holds it.
 - Every host has **zero** or near-zero files in the `error` state. The handful
   that remain are truncated uploads (`Premature end of JPEG file`, PNG files that
   are an exact multiple of 4096 bytes), which the tool correctly refuses to
@@ -129,46 +134,40 @@ Two other things worth recording:
 
 ## Open items
 
-1. **`limits.max_runtime` is applied per root, not per run.** In `run.rs` the
-   budget is rebuilt for every root, so the wall-clock deadline restarts at each
-   one. On web-a that turned a 20-hour budget into a 27.6-hour run that nobody
-   asked for; with five roots the ceiling is effectively 100 hours. The byte and
-   file budgets legitimately vary per root, the deadline does not. Fix: build the
-   deadline once in `Runner::new` and only take the per-root counters from
-   `RootConfig`.
-2. **Legacy tooling is still installed on three hosts**: `/root/tools` and
+1. **Legacy tooling is still installed on three hosts**: `/root/tools` and
    `/root/optimize_images.sh`. The crontab entry is commented out everywhere with
    a `# DISABLED by mediaopt` note, the old containers are gone and the old image
    is removed. Decision needed: delete the remaining files or keep them for
    reference.
-3. **`CHANGELOG.md` does not yet describe the last three fixes** (byte-exact
-   paths, the temporary-file leak, and the resize path that never worked).
-4. **Files with names that are not valid UTF-8 are skipped in remote mode.** The
+2. **Files with names that are not valid UTF-8 are skipped in remote mode.** The
    transport is byte-safe, but APFS cannot store such a name, so the client skips
-   them and the server's own run handles them. One or two per tree. Acceptable,
-   but it should be stated in `operations.md`.
-5. **Undecodable files are retried every night.** Cheap (a second per file), but
+   them and the server's own run handles them. One or two per tree. Documented in
+   `operations.md`.
+3. **Undecodable files are retried every night.** Cheap (a second per file), but
    a permanently broken upload will warn forever. Marking a decode failure as
    settled, the way a rejection is settled, would keep the nightly report clean.
-6. **The manifest grows without bound in principle.** Roughly 350 bytes per row,
+   Documented in `operations.md` as intended behaviour for now.
+4. **The manifest grows without bound in principle.** Roughly 350 bytes per row,
    so a million-file host is a 350 MB database. Fine today; worth a pruning
    policy (drop rows for files that have not been seen for a year) before it
    reaches a million.
-7. **Thumbnail trees on web-a are still processed** (`min_file_size` 5120 there).
+5. **Thumbnail trees on web-a are still processed** (`min_file_size` 5120 there).
    51,000 rejections on those trees so far. Deliberately kept: the owner wanted
    to see whether anything can be won there before excluding them.
-8. **JPEG XL archive pilot** (phase 7) and a **deploy webhook for the site
+6. **JPEG XL archive pilot** (phase 7) and a **deploy webhook for the site
    generator** (phase 8) are designed but not started.
 
 ## Next step
 
-1. Fix the `max_runtime` scope described above. It is a small, contained change
-   with a clear test: a run with two roots and a one-second budget must stop once,
-   not twice.
-2. Bring `CHANGELOG.md` up to date with the three fixes from 2026-10-27, and add
-   the non-UTF-8 and undecodable-file notes to `operations.md`.
-3. Then decide on item 2 (legacy files) and item 7 (thumbnail trees), both of
-   which are housekeeping rather than engineering.
+1. Rebuild the image and roll it out: all four hosts still run the 2026-10-27
+   build, so the per-run budget semantics only become real once they do.
+2. Decide on item 1 (legacy files) and item 5 (thumbnail trees); both are
+   housekeeping rather than engineering.
+3. Then item 3: settle a file that fails to decode, so the nightly `errors=` line
+   only shows new problems.
+4. Before any host approaches a million files, add the manifest pruning policy of
+   item 4. The JPEG XL pilot and the deploy webhook (item 6) stay deferred until
+   the web-a backlog is finished.
 
 ## How to check the current state
 

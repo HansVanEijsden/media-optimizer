@@ -132,6 +132,18 @@ impl Budget {
         }
     }
 
+    /// Re-apply the byte and file limits for the root that is about to run,
+    /// leaving the counters and the deadline alone.
+    ///
+    /// A root may carry a tighter allowance than the run, but the wall clock is
+    /// a property of the run, not of a root: five roots must not turn one
+    /// `max_runtime` into five. The counters are equally part of the run, so a
+    /// global `max_files_per_run` caps the total rather than each root.
+    pub fn refit(&mut self, max_bytes: u64, max_files: u64) {
+        self.max_bytes = max_bytes;
+        self.max_files = max_files;
+    }
+
     pub fn check(&self) -> Stop {
         if let Some(deadline) = self.deadline {
             if Instant::now() >= deadline {
@@ -207,6 +219,27 @@ mod tests {
         let b = Budget::new(0, 0, Some(Duration::from_millis(0)));
         std::thread::sleep(Duration::from_millis(2));
         assert_eq!(b.check(), Stop::Exhausted("max_runtime"));
+    }
+
+    #[test]
+    fn refit_keeps_the_run_deadline() {
+        let mut b = Budget::new(0, 0, Some(Duration::from_millis(0)));
+        std::thread::sleep(Duration::from_millis(2));
+        // The next root rebinds the limits; rebuilding the budget instead would
+        // restart the clock and give every root its own wall clock.
+        b.refit(10_000, 0);
+        assert_eq!(b.check(), Stop::Exhausted("max_runtime"));
+    }
+
+    #[test]
+    fn refit_keeps_the_run_totals() {
+        let mut b = Budget::new(0, 0, None);
+        b.attempted();
+        b.attempted();
+        // `max_files_per_run` counts attempts per run, so a root switch must not
+        // hand the next root a fresh allowance.
+        b.refit(0, 2);
+        assert_eq!(b.check(), Stop::Exhausted("max_files_per_run"));
     }
 
     #[test]

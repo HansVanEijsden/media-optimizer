@@ -281,6 +281,107 @@ fn budget_stops_the_run_early() {
 }
 
 #[test]
+fn budget_is_per_run_not_per_root() {
+    let _serial = serial();
+    let Some(engines) = engines() else { return };
+    let dir = tempfile::tempdir().unwrap();
+    let first = dir.path().join("first");
+    let second = dir.path().join("second");
+    std::fs::create_dir_all(&first).unwrap();
+    std::fs::create_dir_all(&second).unwrap();
+    for i in 0..2 {
+        make_jpeg(
+            &engines.vips,
+            &first.join(format!("a{i}.jpg")),
+            500,
+            400,
+            98,
+        );
+        make_jpeg(
+            &engines.vips,
+            &second.join(format!("b{i}.jpg")),
+            500,
+            400,
+            98,
+        );
+    }
+
+    let config_path = dir.path().join("config.toml");
+    let mut text = format!(
+        r#"
+[jpeg]
+quality_mode = "fixed"
+fixed_quality = 82
+ssimu2_floor = 60.0
+reencode_min_quality = 86
+max_dimension = 2048
+min_gain_percent = 2.0
+lossless_pass = true
+
+[limits]
+jobs = 2
+max_runtime = "600s"
+max_files_per_run = 3
+min_file_age = "0s"
+free_space_reserve = "1MiB"
+min_file_size = 1024
+
+[state]
+db = "{}"
+report_dir = "{}"
+
+[engine]
+vips = "{}"
+
+[[roots]]
+path = "{}"
+enabled = true
+
+[[roots]]
+path = "{}"
+enabled = true
+"#,
+        dir.path().join("state.db").display(),
+        dir.path().join("reports").display(),
+        engines.vips.display(),
+        first.display(),
+        second.display()
+    );
+    if let Some(jpegtran) = &engines.jpegtran {
+        text = text.replace(
+            "[engine]\n",
+            &format!("[engine]\njpegtran = \"{}\"\n", jpegtran.display()),
+        );
+    }
+    std::fs::write(&config_path, text).unwrap();
+    let cfg = load(&config_path, dir.path());
+    let tools = Tools::discover(&cfg.engine);
+
+    let report = run::run(&cfg, &tools, RunOptions { dry_run: false }, "test").unwrap();
+
+    let attempts = |i: usize| {
+        report.per_root[i].changed + report.per_root[i].rejected + report.per_root[i].errors
+    };
+    assert_eq!(report.per_root.len(), 2, "both roots must be reported");
+    assert_eq!(
+        report.stopped,
+        Some("max_files_per_run"),
+        "the run budget must stop the whole run"
+    );
+    assert_eq!(attempts(0), 2, "the first root fits inside the budget");
+    assert_eq!(
+        attempts(1),
+        1,
+        "the second root gets the run's remaining allowance, not a fresh one"
+    );
+    assert_eq!(
+        attempts(0) + attempts(1),
+        3,
+        "max_files_per_run counts attempts per run, across roots"
+    );
+}
+
+#[test]
 fn lossless_only_root_never_degrades_quality() {
     let _serial = serial();
     let Some(engines) = engines() else { return };

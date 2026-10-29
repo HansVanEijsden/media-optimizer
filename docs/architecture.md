@@ -169,8 +169,10 @@ existing rows win, so importing into a live manifest is safe. See
   encoding is a subprocess, so worker threads mostly wait on processes rather
   than burn CPU.
 - Before probing a file the worker checks the budget: wall clock, files changed,
-  bytes replaced. The byte budget counts the input size of each replaced file,
-  not the bytes written, so it bounds how much of the tree can change in one run.
+  bytes replaced. The wall clock is one deadline for the whole run; a root may
+  tighten the byte and file limits but never the clock. The byte budget counts
+  the input size of each replaced file, not the bytes written, so it bounds how
+  much of the tree can change in one run.
 - When a limit is hit, a stop flag is set. The file in flight finishes and is
   recorded, and the rest of the tree is left for the next run. The run row gets a
   note such as `stopped early: max_files_per_run`.

@@ -41,12 +41,12 @@ must be absolute. The defaults below apply when a key is omitted.
 | Key | Default | Meaning |
 | --- | --- | --- |
 | `limits.jobs` | min(parallelism, 2) | worker threads and Rayon pool size |
-| `limits.max_runtime` | `"5h"` | wall clock; the file in flight finishes, then the run stops |
+| `limits.max_runtime` | `"5h"` | wall clock for the whole run; the file in flight finishes, then the run stops |
 | `limits.min_file_age` | `"30m"` | newer files are skipped and not recorded |
 | `limits.free_space_reserve` | `"2GiB"` | a root is skipped when the filesystem has less free space |
 | `limits.min_file_size` | `5120` | smaller files are never considered |
-| `limits.max_bytes_per_run` | `0` | input bytes replaced per run; 0 means unlimited |
-| `limits.max_files_per_run` | `0` | encode attempts per run; 0 means unlimited |
+| `limits.max_bytes_per_run` | `0` | input bytes replaced per run, counted across every root; 0 means unlimited |
+| `limits.max_files_per_run` | `0` | encode attempts per run, counted across every root; 0 means unlimited |
 | `state.db` | `/var/lib/mediaopt/state.db` | SQLite manifest, never inside a media tree |
 | `state.report_dir` | `/var/lib/mediaopt/reports` | one JSON file per run |
 | `state.log_file` | unset | write a daily-rotated log file; `--log-file` overrides it |
@@ -67,7 +67,7 @@ must be absolute. The defaults below apply when a key is omitted.
 | `owner` | unset | `user:group` for every replaced file; unset preserves the original owner |
 | `keep` | `["icc", "exif"]` | accepted on `lossless_only` roots but not applied in 0.1.0 |
 | `managed_by_remote` | `false` | skipped by this process; `mediaopt tools` lists it |
-| `max_bytes_per_run`, `max_files_per_run` | unset | accepted but not enforced in 0.1.0; only global limits apply |
+| `max_bytes_per_run`, `max_files_per_run` | unset | a tighter allowance for the rest of the run while this root is active; the counters and the wall clock are shared by the whole run |
 | `exclude` | `[]` | substrings matched against the full path |
 
 ### Minimal example
@@ -191,6 +191,10 @@ inside a container, so `apply-staged` copies the staged file to a temporary name
 beside the target before renaming it. `rename()` alone returns `EXDEV` across a
 mount boundary.
 
+File names that are not valid UTF-8 cannot be carried to an APFS client, so the
+client skips them with a warning. They are one or two per tree; the server's own
+nightly run handles them.
+
 
 ## Logging and rotation
 
@@ -229,6 +233,9 @@ decodes. It exits nonzero when any check fails.
 
 - Whether a run finished in the last day; catch-up cannot help a stopped service.
 - `errors=` in the summary line; the run continues past a single-file error.
+- A file that cannot be decoded (a truncated upload) is tried once per night and counted in
+  `errors=` until it changes or is deleted; that is cheap and deliberate, because a decode failure
+  is not proof that the file will never be readable.
 - Habitual `stopped=max_runtime` or `stopped=max_files_per_run`: raise the budget or split roots.
 - `freed=0` after the first pass is expected; the pilot's second and third runs changed 0 of 220.
 - `mediaopt verify` weekly, free space against the reserve, state growth, and engine versions.

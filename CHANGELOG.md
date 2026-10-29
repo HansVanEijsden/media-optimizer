@@ -55,11 +55,32 @@ image trees in place, with a manifest that makes repeated runs a no-op.
   retention through `state.report_days`.
 - Manifest export to gzipped JSON and additive import from a snapshot.
 
+### Fixed
+
+- Budgets are enforced once per run, across every root. The runner rebuilt the
+  whole budget for each root, so `limits.max_runtime` restarted its deadline at
+  every root — a five-root host could run five times its wall-clock budget — and
+  `limits.max_files_per_run` and `limits.max_bytes_per_run` handed every root a
+  fresh allowance. Only the per-root limits now travel with the root; the
+  deadline and the counters belong to the run.
+- Oversized images are downscaled at all. libvips picked the saver from the
+  temporary file's `.tmp` extension and refused every resize target, and the
+  `output.jpg[...]` option shorthand could not carry a comma, so every image
+  above `jpeg.max_dimension` failed with "not a known file format". The resize
+  path is now two explicit steps with the same saver options as a plain
+  re-encode.
+- A rejected result no longer leaves its encoded temporary behind. Rejections
+  are the majority of files, and a few hours on four hosts had left 63,800
+  hidden temporaries holding 5.0 GB; `clean_stale_temps` now walks recursively
+  and only removes temporaries older than thirty minutes.
+- Paths are byte-exact end to end. The encoder built its argv through
+  `display()`, so a file name containing a byte that is not valid UTF-8 reached
+  libvips as U+FFFD and was skipped with "file does not exist" on every run, and
+  remote mode carried paths as a lossy string. Both now use `OsString` and bytes.
+
 ### Known limitations
 
 - Lossless WebP re-packing is recognised but not implemented; such files are
   recorded as errors.
-- `limits.oldest_first`, `png.dither`, `state.log_file`, the per-root budgets
-  and the per-root `keep` list are accepted by the config but not applied.
 - GIF, AVIF, HEIC, TIFF, BMP, JPEG XL and CMYK JPEGs are out of scope.
 - The tool targets Unix hosts.
