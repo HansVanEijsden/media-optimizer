@@ -134,11 +134,12 @@ Two other things worth recording:
 
 ## Open items
 
-1. **Legacy tooling is still installed on three hosts**: `/root/tools` and
-   `/root/optimize_images.sh`. The crontab entry is commented out everywhere with
-   a `# DISABLED by mediaopt` note, the old containers are gone and the old image
-   is removed. Decision needed: delete the remaining files or keep them for
-   reference.
+1. **Legacy tooling cleanup is nearly done.** `/root/tools` is gone on all four
+   hosts, and so are the old `mediaopt:0.1.0` images and the rollout compose
+   backups. Still present: `/root/optimize_images.sh` on three hosts (its crontab
+   line is commented out everywhere with a `# DISABLED by mediaopt` note) and the
+   stale `/opt/mediaopt/src` + `build.log` from the local-build era on two hosts.
+   Decision needed: remove those too.
 2. **Files with names that are not valid UTF-8 are skipped in remote mode.** The
    transport is byte-safe, but APFS cannot store such a name, so the client skips
    them and the server's own run handles them. One or two per tree. Documented in
@@ -163,8 +164,9 @@ Two other things worth recording:
    proven on the canary with a two-root self-test; the summary lines are the
    production confirmation. On settled hosts `changed=` stays at its usual 0 or
    small number, and `stopped=` now means a run total, not a root.
-2. Decide on item 1 (legacy files) and item 5 (thumbnail trees); both are
-   housekeeping rather than engineering.
+2. Finish the legacy cleanup of item 1: `/root/optimize_images.sh`, the disabled
+   crontab lines and the stale build directories. Then decide on item 5
+   (thumbnail trees); both are housekeeping rather than engineering.
 3. Then item 3: settle a file that fails to decode, so the nightly `errors=` line
    only shows new problems.
 4. Before any host approaches a million files, add the manifest pruning policy of
