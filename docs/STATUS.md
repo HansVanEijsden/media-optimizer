@@ -1,6 +1,6 @@
 # Status
 
-_Snapshot taken 2026-10-29. This page is the operational state: what works, what
+_Snapshot taken 2026-10-31. This page is the operational state: what works, what
 was decided, what is open, and what to do next. The design lives in
 [architecture.md](architecture.md), the format details in
 [formats.md](formats.md), the measurements behind the defaults in
@@ -12,9 +12,12 @@ was decided, what is open, and what to do next. The design lives in
 Four hosts, all on `ghcr.io/hansvaneijsden/media-optimizer:sha-3992aca` (built
 2026-10-29, 86 MB, index digest `sha256:0e6128…`), each with its own TOML file
 and its own nightly slot. The image is multi-arch and pulls anonymously from
-GHCR; the binary inside all four containers is byte-identical. Host names,
-client names and paths are deliberately absent from this repository; the labels
-below are the ones used everywhere else in the docs.
+GHCR; the binary inside all four containers is byte-identical. The legacy cron
+optimiser is gone from every host: no `/root/tools`, no
+`/root/optimize_images.sh`, no disabled crontab lines and no local build
+directories. The container is the only optimiser left. Host names, client names
+and paths are deliberately absent from this repository; the labels below are the
+ones used everywhere else in the docs.
 
 | label | what it is | roots | nightly slot | burn-down |
 |---|---|---|---|---|
@@ -134,44 +137,33 @@ Two other things worth recording:
 
 ## Open items
 
-1. **Legacy tooling cleanup is nearly done.** `/root/tools` is gone on all four
-   hosts, and so are the old `mediaopt:0.1.0` images and the rollout compose
-   backups. Still present: `/root/optimize_images.sh` on three hosts (its crontab
-   line is commented out everywhere with a `# DISABLED by mediaopt` note) and the
-   stale `/opt/mediaopt/src` + `build.log` from the local-build era on two hosts.
-   Decision needed: remove those too.
-2. **Files with names that are not valid UTF-8 are skipped in remote mode.** The
+1. **Files with names that are not valid UTF-8 are skipped in remote mode.** The
    transport is byte-safe, but APFS cannot store such a name, so the client skips
    them and the server's own run handles them. One or two per tree. Documented in
    `operations.md`.
-3. **Undecodable files are retried every night.** Cheap (a second per file), but
+2. **Undecodable files are retried every night.** Cheap (a second per file), but
    a permanently broken upload will warn forever. Marking a decode failure as
    settled, the way a rejection is settled, would keep the nightly report clean.
    Documented in `operations.md` as intended behaviour for now.
-4. **The manifest grows without bound in principle.** Roughly 350 bytes per row,
+3. **The manifest grows without bound in principle.** Roughly 350 bytes per row,
    so a million-file host is a 350 MB database. Fine today; worth a pruning
    policy (drop rows for files that have not been seen for a year) before it
    reaches a million.
-5. **Thumbnail trees on web-a are still processed** (`min_file_size` 5120 there).
+4. **Thumbnail trees on web-a are still processed** (`min_file_size` 5120 there).
    51,000 rejections on those trees so far. Deliberately kept: the owner wanted
    to see whether anything can be won there before excluding them.
-6. **JPEG XL archive pilot** (phase 7) and a **deploy webhook for the site
+5. **JPEG XL archive pilot** (phase 7) and a **deploy webhook for the site
    generator** (phase 8) are designed but not started.
 
 ## Next step
 
-1. Watch the first runs on the new image (nightly 03:15-04:45). The fix is
-   proven on the canary with a two-root self-test; the summary lines are the
-   production confirmation. On settled hosts `changed=` stays at its usual 0 or
-   small number, and `stopped=` now means a run total, not a root.
-2. Finish the legacy cleanup of item 1: `/root/optimize_images.sh`, the disabled
-   crontab lines and the stale build directories. Then decide on item 5
-   (thumbnail trees); both are housekeeping rather than engineering.
-3. Then item 3: settle a file that fails to decode, so the nightly `errors=` line
-   only shows new problems.
-4. Before any host approaches a million files, add the manifest pruning policy of
-   item 4. The JPEG XL pilot and the deploy webhook (item 6) stay deferred until
-   the web-a backlog is finished.
+1. Item 2: settle a file that fails to decode, so the nightly `errors=` line only
+   shows new problems.
+2. Item 4: decide whether the thumbnail trees on web-a stay in scope. The owner
+   wanted to see whether anything can be won there; 51,000 rejections later, the
+   answer is probably no.
+3. Item 3: add the manifest pruning policy before any host approaches a million
+   files. The JPEG XL pilot and the deploy webhook (item 5) stay deferred.
 
 ## How to check the current state
 
