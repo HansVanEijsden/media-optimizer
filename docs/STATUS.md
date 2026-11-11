@@ -165,22 +165,24 @@ Two other things worth recording:
    transport is byte-safe, but APFS cannot store such a name, so the client skips
    them and the server's own run handles them. One or two per tree. Documented in
    `operations.md`.
-2. **The manifest keeps growing.** Roughly 500 bytes per row: 349 MB for 709,000
-   rows on web-a, 264 MB on web-c. Most of that is the fast-path cache for files
-   that are settled and will never change again, so pruning saves time at the
-   cost of a re-probe later. There is no last-seen column — the fast path
-   deliberately does not write, so `ts` is the decision time, not the last
-   sighting — and rows of files that were deleted cannot be told apart from
-   healthy settled rows. Worth a design decision before the largest host passes a
-   gigabyte.
+2. **The manifest keeps growing, slowly — deferred.** Roughly 500 bytes per row:
+   349 MB for 709,000 rows on web-a, 264 MB on web-c. After the backlog settled,
+   growth is new uploads only, measured at ~6,000 rows (~3 MB) a month, so the
+   gigabyte threshold on the largest host is more than fifteen years away. The
+   rows are the fast-path cache for files that are settled and will never change
+   again, so pruning saves time at the cost of a re-probe later. There is no
+   last-seen column — the fast path deliberately does not write, so `ts` is the
+   decision time, not the last sighting — and rows of deleted files cannot be
+   told apart from healthy settled rows. Revisit only if a host's manifest
+   starts growing for another reason.
 3. **JPEG XL archive pilot** (phase 7) and a **deploy webhook for the site
    generator** (phase 8) are designed but not started.
 
 ## Next step
 
-1. Item 2: design the manifest pruning policy — with the measured growth rate
-   from the snapshot above, and the caveat that a pruned row costs a re-probe.
-2. Item 3: the JPEG XL pilot and the deploy webhook stay deferred.
+Nothing is planned. The remaining items are deferred: the manifest pruning above
+and the two-phase JPEG XL / deploy webhook work. The running installation is
+settled; the nightly runs only report new problems.
 
 ## How to check the current state
 
