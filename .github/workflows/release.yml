@@ -12,6 +12,11 @@ name: Release
 # Multi-arch note: linux/arm64 is emulated on the amd64 runner (QEMU), and the
 # image compiles mozjpeg and libvips from source, so this job is slow. The GHA
 # cache is shared with the CI docker job, which builds linux/amd64 only.
+#
+# The emulated arm64 build has hung once (a release run sat in the rust-build
+# stage for 45 minutes without output). The manual trigger therefore takes a
+# `platforms` input: dispatch with linux/amd64 to publish for the amd64 hosts
+# while the arm64 build is retried later. A normal push still builds both.
 
 on:
   push:
@@ -31,6 +36,12 @@ on:
       - 'deploy/Dockerfile'
       - '.dockerignore'
   workflow_dispatch:
+    inputs:
+      platforms:
+        description: 'target platforms (linux/amd64,linux/arm64 or linux/amd64)'
+        required: false
+        default: 'linux/amd64,linux/arm64'
+        type: string
 
 permissions:
   contents: read
@@ -52,7 +63,7 @@ env:
 
 jobs:
   publish:
-    name: build and push (linux/amd64, linux/arm64)
+    name: build and push image
     runs-on: ubuntu-latest
     timeout-minutes: 120
     steps:
@@ -94,7 +105,7 @@ jobs:
         with:
           context: .
           file: deploy/Dockerfile
-          platforms: linux/amd64,linux/arm64
+          platforms: ${{ inputs.platforms || 'linux/amd64,linux/arm64' }}
           push: true
           tags: ${{ steps.meta.outputs.tags }}
           labels: ${{ steps.meta.outputs.labels }}
