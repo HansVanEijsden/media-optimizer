@@ -33,8 +33,6 @@ pub enum Action {
     PngQuant,
     /// Lossless PNG recompression.
     PngLossless,
-    /// Lossless WebP re-pack.
-    WebpLossless,
     /// Nothing to do; `reason` says why. Recorded so the next run does not
     /// reconsider the file.
     Skip,
@@ -62,6 +60,9 @@ pub enum Reason {
     PngHasAlpha,
     /// Lossy WebP: re-encoding would be a second lossy generation.
     WebpLossy,
+    /// Lossless WebP is in scope for the format policy but re-packing it is not
+    /// implemented in 0.1.0; settled with a reason instead of failing every run.
+    WebpLosslessNotImplemented,
     /// PNG handling disabled in the configuration for this root.
     FormatDisabled,
     /// The manifest already recorded that no gain is achievable.
@@ -74,6 +75,9 @@ pub enum Reason {
     /// PNG with an embedded ICC profile: palette quantisation would drop it, so
     /// the lossless path is used instead.
     PngHasIcc,
+    /// The image data cannot be decoded (a truncated upload or corrupt bytes).
+    /// Settled once so a permanently broken file does not warn every night.
+    Unreadable,
 }
 
 impl Reason {
@@ -94,6 +98,8 @@ impl Reason {
             Reason::LosslessDisabled => "lossless pass disabled",
             Reason::AlreadyProcessed => "already processed by this tool",
             Reason::PngHasIcc => "PNG carries an ICC profile",
+            Reason::WebpLosslessNotImplemented => "lossless WebP not implemented in v1",
+            Reason::Unreadable => "cannot decode (broken or truncated)",
         }
     }
 }
@@ -273,13 +279,9 @@ fn decide_webp(content: &Content, cfg: &Config) -> Decision {
         return Decision::skip(Reason::UnparsableHeader, 0);
     };
     if info.lossless && cfg.webp.lossless_only {
-        Decision {
-            action: Action::WebpLossless,
-            reason: None,
-            resize_to: None,
-            stored_quality: 0,
-            quality_approximate: false,
-        }
+        // Re-packing a lossless WebP is not implemented in 0.1.0. Record it as a
+        // settled skip instead of letting the encoder fail on it every night.
+        Decision::skip(Reason::WebpLosslessNotImplemented, 0)
     } else {
         Decision::skip(Reason::WebpLossy, 0)
     }
@@ -341,7 +343,7 @@ pub fn parse_size(text: &str) -> Option<u64> {
 mod tests {
     use super::*;
     use crate::jpeg::{JpegInfo, Subsampling};
-    use crate::png::PngInfo;
+    use crate::png::{PngInfo, WebpInfo};
 
     fn jpeg_info(quality: u8, width: u32, height: u32) -> Content {
         Content {
@@ -460,6 +462,29 @@ mod tests {
         let d = decide(&facts(&c), &cfg, &root());
         assert_eq!(d.action, Action::Skip);
         assert_eq!(d.reason, Some(Reason::Cmyk));
+    }
+
+    #[test]
+    fn lossless_webp_is_settled_as_skipped() {
+        let cfg = Config::default();
+        let c = Content {
+            format: Some(Format::Webp),
+            webp: Some(WebpInfo {
+                width: 1200,
+                height: 800,
+                lossless: true,
+                has_alpha: false,
+                has_icc: false,
+            }),
+            ..Default::default()
+        };
+        let d = decide(&facts(&c), &cfg, &root());
+        assert_eq!(d.action, Action::Skip);
+        assert_eq!(
+            d.reason,
+            Some(Reason::WebpLosslessNotImplemented),
+            "unimplemented must be settled, not retried as an error every night"
+        );
     }
 
     #[test]

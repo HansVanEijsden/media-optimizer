@@ -63,7 +63,7 @@ what new uploads add.
   `scripts/mediaopt-remote.sh`.
 - **Delivery.** Multi-stage Dockerfile, non-root, read-only root filesystem,
   all capabilities dropped, per-host compose file. CI runs `fmt`, `clippy` and
-  the tests (71 unit, 9 integration); the release workflow builds only when
+  the tests (74 unit, 11 integration); the release workflow builds only when
   code, the Dockerfile or the Cargo manifests change, so a documentation commit
   never produces an image.
 
@@ -147,6 +147,14 @@ Two other things worth recording:
     that settle as rejected. The site still adds ~250 uploads a month, ~1,500 new
     variants, worth roughly 0.5 GB a year. Excluding them would save one or two
     minutes of the nightly scan and forfeit that, so they stay.
+16. **A broken image is reported once, then settled.** A file whose bytes cannot
+    be decoded is recognised from the loader's error message and recorded as a
+    settled skip with reason `unreadable`; it is retried only when its
+    fingerprint changes, so a repaired upload is picked up on the next run.
+    Lossless WebP, whose re-pack is not implemented in 0.1.0, is settled the same
+    way with reason `webp_lossless_unimplemented` instead of failing every night.
+    Before this, web-a carried a permanent `errors=` of 18: two truncated JPEGs
+    and sixteen lossless WebP files.
 
 ## Open items
 
@@ -154,11 +162,7 @@ Two other things worth recording:
    transport is byte-safe, but APFS cannot store such a name, so the client skips
    them and the server's own run handles them. One or two per tree. Documented in
    `operations.md`.
-2. **Undecodable files are retried every night.** Cheap (a second per file), but
-   a permanently broken upload will warn forever. Marking a decode failure as
-   settled, the way a rejection is settled, would keep the nightly report clean.
-   Documented in `operations.md` as intended behaviour for now.
-3. **The manifest keeps growing.** Roughly 500 bytes per row: 349 MB for 709,000
+2. **The manifest keeps growing.** Roughly 500 bytes per row: 349 MB for 709,000
    rows on web-a, 264 MB on web-c. Most of that is the fast-path cache for files
    that are settled and will never change again, so pruning saves time at the
    cost of a re-probe later. There is no last-seen column — the fast path
@@ -166,16 +170,14 @@ Two other things worth recording:
    sighting — and rows of files that were deleted cannot be told apart from
    healthy settled rows. Worth a design decision before the largest host passes a
    gigabyte.
-4. **JPEG XL archive pilot** (phase 7) and a **deploy webhook for the site
+3. **JPEG XL archive pilot** (phase 7) and a **deploy webhook for the site
    generator** (phase 8) are designed but not started.
 
 ## Next step
 
-1. Item 2: settle a file that fails to decode, so the nightly `errors=` line only
-   shows new problems.
-2. Item 3: design the manifest pruning policy — with the measured growth rate
+1. Item 2: design the manifest pruning policy — with the measured growth rate
    from the snapshot above, and the caveat that a pruned row costs a re-probe.
-3. Item 4: the JPEG XL pilot and the deploy webhook stay deferred.
+2. Item 3: the JPEG XL pilot and the deploy webhook stay deferred.
 
 ## How to check the current state
 

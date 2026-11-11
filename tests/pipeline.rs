@@ -10,7 +10,7 @@ use std::time::Duration;
 
 use mediaopt::config::Config;
 use mediaopt::engine::Tools;
-use mediaopt::manifest::Manifest;
+use mediaopt::manifest::{Manifest, Outcome};
 use mediaopt::run::{self, RunOptions};
 
 /// These tests drive the real encoders and share rayon's global pool, so run one
@@ -625,4 +625,165 @@ fn an_oversized_image_is_downscaled() {
             entry.path().display()
         );
     }
+}
+
+#[test]
+fn an_undecodable_file_is_reported_once_and_then_settled() {
+    let _serial = serial();
+    let Some(engines) = engines() else { return };
+    let Some(jpegtran) = &engines.jpegtran else {
+        eprintln!("skipping: jpegtran not available");
+        return;
+    };
+    let dir = tempfile::tempdir().unwrap();
+    let root = dir.path().join("media");
+    std::fs::create_dir_all(&root).unwrap();
+    let image = root.join("truncated.jpg");
+    make_jpeg(&engines.vips, &image, 800, 600, 96);
+    let full = std::fs::read(&image).unwrap();
+    let truncated = full[..full.len() * 6 / 10].to_vec();
+    std::fs::write(&image, &truncated).unwrap();
+
+    // reencode_min_quality above the stored quality forces the lossless pass,
+    // where jpegtran reports the truncation instead of libvips quietly padding
+    // the missing scan data.
+    let config_path = dir.path().join("config.toml");
+    let text = format!(
+        r#"
+[jpeg]
+quality_mode = "fixed"
+fixed_quality = 85
+reencode_min_quality = 100
+max_dimension = 2048
+min_gain_percent = 2.0
+lossless_pass = true
+
+[limits]
+jobs = 2
+max_runtime = "600s"
+min_file_age = "0s"
+free_space_reserve = "1MiB"
+min_file_size = 1024
+
+[state]
+db = "{}"
+report_dir = "{}"
+
+[engine]
+vips = "{}"
+jpegtran = "{}"
+
+[[roots]]
+path = "{}"
+enabled = true
+"#,
+        dir.path().join("state.db").display(),
+        dir.path().join("reports").display(),
+        engines.vips.display(),
+        jpegtran.display(),
+        root.display()
+    );
+    std::fs::write(&config_path, text).unwrap();
+    let cfg = load(&config_path, dir.path());
+    let tools = Tools::discover(&cfg.engine);
+
+    let first = run::run(&cfg, &tools, RunOptions { dry_run: false }, "test").unwrap();
+    assert_eq!(
+        first.totals.files_changed, 0,
+        "a broken file is never replaced"
+    );
+    assert_eq!(first.totals.errors, 1, "the first sighting is reported");
+    assert_eq!(
+        std::fs::read(&image).unwrap(),
+        truncated,
+        "file must be untouched"
+    );
+
+    let manifest = Manifest::open(&cfg.state.db).unwrap();
+    let record = manifest
+        .get(&image)
+        .unwrap()
+        .expect("the broken file must be recorded");
+    assert_eq!(record.outcome, Outcome::Skipped);
+    assert_eq!(record.reason.as_deref(), Some("unreadable"));
+
+    // The bytes cannot have changed, so the next run must not warn about it again.
+    let second = run::run(&cfg, &tools, RunOptions { dry_run: false }, "test").unwrap();
+    assert_eq!(
+        second.totals.errors, 0,
+        "a settled file must not warn again"
+    );
+    assert_eq!(second.totals.files_changed, 0);
+
+    // A fixed upload must be picked up again: the fingerprint is what settles it.
+    std::fs::write(&image, &full).unwrap();
+    let third = run::run(&cfg, &tools, RunOptions { dry_run: false }, "test").unwrap();
+    assert_eq!(third.totals.errors, 0);
+    let record = manifest.get(&image).unwrap().unwrap();
+    assert_ne!(
+        record.reason.as_deref(),
+        Some("unreadable"),
+        "a repaired file must be reconsidered, not stay settled"
+    );
+}
+
+#[test]
+fn lossless_webp_is_settled_without_an_error() {
+    let _serial = serial();
+    let Some(engines) = engines() else { return };
+    let dir = tempfile::tempdir().unwrap();
+    let root = dir.path().join("media");
+    std::fs::create_dir_all(&root).unwrap();
+    let image = root.join("lossless.webp");
+    let source = dir.path().join("source.v");
+
+    // Noise, not the colour chart: the chart compresses to a few hundred bytes and
+    // would be skipped by min_file_size before the WebP decision is reached.
+    let generated = Command::new(&engines.vips)
+        .arg("gaussnoise")
+        .arg(&source)
+        .arg("1200")
+        .arg("900")
+        .status()
+        .map(|s| s.success())
+        .unwrap_or(false);
+    let saved = generated
+        && Command::new(&engines.vips)
+            .arg("webpsave")
+            .arg(&source)
+            .arg(&image)
+            .arg("--lossless")
+            .status()
+            .map(|s| s.success())
+            .unwrap_or(false);
+    let _ = std::fs::remove_file(&source);
+    if !saved {
+        eprintln!("skipping: this libvips cannot save lossless WebP");
+        return;
+    }
+    let size = std::fs::metadata(&image).unwrap().len();
+    assert!(size > 1024, "test image is too small: {size} bytes");
+
+    let config_path = write_config(dir.path(), &root, "", &engines);
+    let cfg = load(&config_path, dir.path());
+    let tools = Tools::discover(&cfg.engine);
+
+    let report = run::run(&cfg, &tools, RunOptions { dry_run: false }, "test").unwrap();
+    assert_eq!(
+        report.totals.errors, 0,
+        "an unimplemented re-pack is a settled skip, not an error"
+    );
+    assert_eq!(report.totals.files_changed, 0);
+    assert_eq!(report.totals.files_skipped, 1);
+
+    let manifest = Manifest::open(&cfg.state.db).unwrap();
+    let record = manifest
+        .get(&image)
+        .unwrap()
+        .expect("webp must be recorded");
+    assert_eq!(record.outcome, Outcome::Skipped);
+    assert_eq!(
+        record.reason.as_deref(),
+        Some("webp_lossless_unimplemented")
+    );
 }

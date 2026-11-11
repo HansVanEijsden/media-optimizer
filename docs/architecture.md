@@ -200,13 +200,15 @@ with the consequences described in [operations](operations.md).
 
 ## Known gaps in 0.1.0
 
-- `webp.lossless_only` leads to a `webp_lossless` decision, but the encoder
-  returns "not implemented in v1" and the file is recorded as an error.
+- `webp.lossless_only` leads to a `webp_lossless` decision, but the re-pack is
+  not implemented in v1: the file is recorded as a settled skip with reason
+  `webp_lossless_unimplemented` and no encode is attempted.
 - Walk order is filesystem order. There is no "oldest first" ordering: the
   per-run budgets are what stage a first pass, not the traversal order.
-- An encode error records a row whose fingerprint still matches the unchanged
-  file. Rows in `error` and `pending` state are retried on the next run, so a
-  transient failure heals itself; there is no CLI command in 0.1.0 to clear a
-  single row, and a permanently broken file is retried nightly (one encode
-  attempt, recorded each time).
+- An image whose bytes cannot be decoded is recognised from the loader's error
+  message (`engine::is_decode_failure`), reported once as an error and then
+  recorded as a settled skip with reason `unreadable`; it is retried only when
+  its fingerprint changes. Transient failures (disk full, permissions, a missing
+  binary) do not match the whitelist, stay in `error` state and heal themselves
+  on the next run. There is no CLI command in 0.1.0 to clear a single row.
 - Metadata and timestamp handling uses Unix APIs; the tool targets Unix hosts.

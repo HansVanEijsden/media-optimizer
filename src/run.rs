@@ -366,12 +366,27 @@ impl<'a> Runner<'a> {
             Ok(_) => Ok(()),
             Err(e) => {
                 let _ = std::fs::remove_file(&temp);
-                tracing::warn!("{}: {e:#}", path.display());
-                self.counters.errors.fetch_add(1, Ordering::Relaxed);
+                let detail = format!("{e:#}");
                 let mut record = self.base_record(path, root, content, fingerprint, digest);
                 record.action = decision.action_label().to_string();
-                record.outcome = Outcome::Error;
-                record.detail = Some(format!("{e:#}"));
+                // An image whose bytes cannot be decoded fails the same way on
+                // every run until the file changes. Report it once and remember
+                // it as settled, so the nightly line keeps showing new problems
+                // only. Everything else stays an error and is retried.
+                if engine::is_decode_failure(&detail) {
+                    tracing::warn!(
+                        "{}: cannot decode; remembering it as settled: {}",
+                        path.display(),
+                        detail
+                    );
+                    record.reason = Some(Reason::Unreadable.as_str().to_string());
+                    record.outcome = Outcome::Skipped;
+                } else {
+                    tracing::warn!("{}: {}", path.display(), detail);
+                    record.outcome = Outcome::Error;
+                }
+                record.detail = Some(detail);
+                self.counters.errors.fetch_add(1, Ordering::Relaxed);
                 self.store(record)
             }
         }
@@ -445,9 +460,6 @@ impl<'a> Runner<'a> {
                 }
             }
             Action::PngLossless => engine::lossless_png(path, temp, self.cfg.png.lossless_effort)?,
-            Action::WebpLossless => {
-                anyhow::bail!("lossless WebP re-pack is not implemented in v1")
-            }
             Action::Skip => return Ok(()),
         }
 
@@ -890,7 +902,6 @@ impl Decision {
             Action::JpegLossless => "jpeg_lossless",
             Action::PngQuant => "png_quant",
             Action::PngLossless => "png_lossless",
-            Action::WebpLossless => "webp_lossless",
             Action::Skip => "skip",
         }
     }
@@ -914,6 +925,8 @@ impl Reason {
             Reason::LosslessDisabled => "lossless_disabled",
             Reason::AlreadyProcessed => "already_processed",
             Reason::PngHasIcc => "png_has_icc",
+            Reason::WebpLosslessNotImplemented => "webp_lossless_unimplemented",
+            Reason::Unreadable => "unreadable",
         }
     }
 }

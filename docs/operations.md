@@ -34,7 +34,7 @@ must be absolute. The defaults below apply when a key is omitted.
 | `png.min_gain_percent` | `5.0` | palette result must be at least this much smaller |
 | `png.min_gain_percent_lossless` | `0.5` | lossless path: any real win is kept |
 | `png.lossless_effort` | `2` | oxipng preset, 0 to 6 |
-| `webp.lossless_only` | `true` | lossless WebP is considered, but the action is not implemented in 0.1.0 and is recorded as an error |
+| `webp.lossless_only` | `true` | lossless WebP is considered, but the re-pack is not implemented in 0.1.0; the file is settled as skipped with reason `webp_lossless_unimplemented` and no encode is attempted |
 
 ### `[limits]`, `[state]`, `[engine]`
 
@@ -233,9 +233,9 @@ decodes. It exits nonzero when any check fails.
 
 - Whether a run finished in the last day; catch-up cannot help a stopped service.
 - `errors=` in the summary line; the run continues past a single-file error.
-- A file that cannot be decoded (a truncated upload) is tried once per night and counted in
-  `errors=` until it changes or is deleted; that is cheap and deliberate, because a decode failure
-  is not proof that the file will never be readable.
+- A file that cannot be decoded (a truncated upload) is reported once in `errors=`, then recorded as
+  settled with reason `unreadable` and retried only when the file changes. A repaired upload is
+  picked up on the next run, so the nightly line keeps showing new problems only.
 - Habitual `stopped=max_runtime` or `stopped=max_files_per_run`: raise the budget or split roots.
 - `freed=0` after the first pass is expected; the pilot's second and third runs changed 0 of 220.
 - `mediaopt verify` weekly, free space against the reserve, state growth, and engine versions.

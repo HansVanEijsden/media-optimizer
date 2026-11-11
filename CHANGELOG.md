@@ -77,10 +77,16 @@ image trees in place, with a manifest that makes repeated runs a no-op.
   `display()`, so a file name containing a byte that is not valid UTF-8 reached
   libvips as U+FFFD and was skipped with "file does not exist" on every run, and
   remote mode carried paths as a lossy string. Both now use `OsString` and bytes.
+- A file that cannot be decoded no longer warns every night. The loader's error
+  is recognised (`engine::is_decode_failure`) and the file is reported once, then
+  recorded as a settled skip with reason `unreadable`; it is retried only when
+  its fingerprint changes, so a repaired upload is picked up on the next run.
+  Lossless WebP, whose re-pack is not implemented in 0.1.0, is settled the same
+  way with reason `webp_lossless_unimplemented` instead of failing nightly.
 
 ### Known limitations
 
 - Lossless WebP re-packing is recognised but not implemented; such files are
-  recorded as errors.
+  settled as skipped and never encoded.
 - GIF, AVIF, HEIC, TIFF, BMP, JPEG XL and CMYK JPEGs are out of scope.
 - The tool targets Unix hosts.

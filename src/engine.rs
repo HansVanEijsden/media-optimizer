@@ -533,6 +533,34 @@ pub fn scaled_dimensions(width: u32, height: u32, target: u32) -> (u32, u32) {
     (w, h)
 }
 
+/// Whether an engine error means the *input* cannot be decoded, as opposed to a
+/// transient failure such as a full disk, a permission problem or a missing
+/// binary.
+///
+/// Only the known loader messages count, and that is deliberate: a decode
+/// failure is a property of the file's bytes, so the result is worth remembering
+/// (mark it settled and retry only when the file changes), while an unclassified
+/// error must stay retryable. Whitelisting is safer than treating every engine
+/// error as one or the other.
+pub fn is_decode_failure(message: &str) -> bool {
+    let message = message.to_ascii_lowercase();
+    const MARKERS: [&str; 12] = [
+        "premature end of jpeg file",
+        "premature end of data",
+        "premature end of file",
+        "premature eof",
+        "unexpected end of file",
+        "not a known file format",
+        "corrupt jpeg data",
+        "invalid jpeg",
+        "corrupt png",
+        "invalid png",
+        "crc error",
+        "truncated",
+    ];
+    MARKERS.iter().any(|marker| message.contains(marker))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -601,5 +629,37 @@ mod tests {
         assert_eq!(scaled_dimensions(1790, 4080, 2048), (899, 2048));
         assert_eq!(scaled_dimensions(1200, 800, 2048), (1200, 800));
         assert_eq!(scaled_dimensions(100, 100, 2048), (100, 100));
+    }
+
+    #[test]
+    fn decode_failures_are_recognised() {
+        for message in [
+            "jpegtran failed (exit status: 2): Premature end of JPEG file",
+            "encoding /x.jpg: VipsJpeg: Premature end of JPEG file",
+            "VipsForeignLoad: /x.png is not a known file format",
+            "Corrupt PNG: IDAT CRC error",
+            "oxipng on /x.png: unexpected end of file",
+        ] {
+            assert!(
+                is_decode_failure(message),
+                "should count as decode: {message}"
+            );
+        }
+    }
+
+    #[test]
+    fn transient_failures_stay_retryable() {
+        for message in [
+            "encoding /x.jpg: No space left on device",
+            "writing /x.mediaopt.1.tmp: Permission denied",
+            "spawning vips for encoding /x.jpg: No such file or directory",
+            "jpegtran failed (exit status: 1): cannot open file",
+            "oxipng on /x.png: Input/output error",
+        ] {
+            assert!(
+                !is_decode_failure(message),
+                "must stay an error, not settled: {message}"
+            );
+        }
     }
 }
