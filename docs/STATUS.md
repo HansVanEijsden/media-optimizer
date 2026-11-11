@@ -9,15 +9,15 @@ was decided, what is open, and what to do next. The design lives in
 
 ## Where it runs
 
-Four hosts, all on `ghcr.io/hansvaneijsden/media-optimizer:sha-3992aca` (built
-2026-10-29, 86 MB, index digest `sha256:0e6128…`), each with its own TOML file
-and its own nightly slot. The image is multi-arch and pulls anonymously from
-GHCR; the binary inside all four containers is byte-identical. The legacy cron
-optimiser is gone from every host: no `/root/tools`, no
-`/root/optimize_images.sh`, no disabled crontab lines and no local build
-directories. The container is the only optimiser left. Host names, client names
-and paths are deliberately absent from this repository; the labels below are the
-ones used everywhere else in the docs.
+Four hosts, all on `ghcr.io/hansvaneijsden/media-optimizer:sha-1601735` (built
+2026-11-11, 86 MB, digest `sha256:73c864…`; amd64-only for now — the emulated
+arm64 build stalled once and is retried separately), each with its own TOML file
+and its own nightly slot. The image pulls anonymously from GHCR; the binary
+inside all four containers is byte-identical. The legacy cron optimiser is gone
+from every host: no `/root/tools`, no `/root/optimize_images.sh`, no disabled
+crontab lines and no local build directories. The container is the only
+optimiser left. Host names, client names and paths are deliberately absent from
+this repository; the labels below are the ones used everywhere else in the docs.
 
 | label | what it is | roots | nightly slot | burn-down |
 |---|---|---|---|---|
@@ -65,7 +65,9 @@ what new uploads add.
   all capabilities dropped, per-host compose file. CI runs `fmt`, `clippy` and
   the tests (74 unit, 11 integration); the release workflow builds only when
   code, the Dockerfile or the Cargo manifests change, so a documentation commit
-  never produces an image.
+  never produces an image. It builds amd64 and emulated arm64; a manual
+  `platforms` input publishes amd64-only when the arm64 build stalls, which it
+  did once on 2026-11-11 (45 minutes in the rust stage, no progress).
 
 ## Results so far
 
