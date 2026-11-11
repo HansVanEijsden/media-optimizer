@@ -1,6 +1,6 @@
 # Status
 
-_Snapshot taken 2026-10-31. This page is the operational state: what works, what
+_Snapshot taken 2026-11-11. This page is the operational state: what works, what
 was decided, what is open, and what to do next. The design lives in
 [architecture.md](architecture.md), the format details in
 [formats.md](formats.md), the measurements behind the defaults in
@@ -21,10 +21,14 @@ ones used everywhere else in the docs.
 
 | label | what it is | roots | nightly slot | burn-down |
 |---|---|---|---|---|
-| web-a | one large static image tree (news site) | 5 | 03:30 | yes, catch-up in progress |
-| web-b | shared host, 25+ WordPress installs | 25 | 04:15 | yes |
+| web-a | large static image tree (news site) plus two WordPress upload trees | 4 | 03:30 | yes |
+| web-b | shared host, 26 WordPress uploads plus one photo tree | 27 | 04:15 | yes |
 | web-c | VPS with a static image tree | 1 | 03:15 | no |
 | web-d | one small WordPress install | 1 | 04:45 | yes |
+
+One of web-a's four roots is an empty placeholder; it walks nothing and costs
+nothing. The backlog is gone on all four hosts: the nightly runs now change only
+what new uploads add.
 
 ## What works
 
@@ -70,11 +74,11 @@ disk before versus after, for files the tool actually replaced.
 
 | label | files changed | space freed | share of those bytes | state |
 |---|---:|---:|---:|---|
-| web-a | 468,076 | **39.8 GiB** | 33% | still working through the backlog |
-| web-c | 409,978 | **16.4 GiB** | 25% | settled, nightly re-check |
-| web-b | 94,478 | **1.7 GiB** | 14% | settled, nightly re-check |
+| web-a | 485,266 | **41.5 GiB** | 33% | settled, nightly re-check of new uploads |
+| web-c | 414,782 | **16.9 GiB** | 25% | settled, nightly re-check |
+| web-b | 94,655 | **1.7 GiB** | 14% | settled, nightly re-check |
 | web-d | 2,260 | **27.6 MiB** | 18% | settled, nightly re-check |
-| **total** | **974,792** | **~58 GiB** | | |
+| **total** | **996,963** | **~60 GiB** | | |
 
 For comparison, the nightly image backup of these hosts is the rollback path and
 runs before the optimiser, so the freed space lands in the following night's
@@ -82,11 +86,12 @@ snapshot.
 
 Two other things worth recording:
 
-- The tool's own footprint is small and known: the manifest is roughly 350 bytes
-  per row (18-63 MB on these hosts), the image is 86 MB, and no temporary files
-  survive a run. That last property was measured, not assumed: the reject path
-  removes its own output, a run sweeps anything older than thirty minutes, and an
-  integration test holds it.
+- The tool's own footprint is known: the manifest is roughly 500 bytes per row
+  two weeks in — 349 MB for 709,000 rows on web-a, 264 MB and 87 MB on web-c and
+  web-b, 1.4 MB on web-d — the image is 86 MB, and no temporary files survive a
+  run. That last property was measured, not assumed: the reject path removes its
+  own output, a run sweeps anything older than thirty minutes, and an integration
+  test holds it.
 - Every host has **zero** or near-zero files in the `error` state. The handful
   that remain are truncated uploads (`Premature end of JPEG file`, PNG files that
   are an exact multiple of 4096 bytes), which the tool correctly refuses to
@@ -134,6 +139,14 @@ Two other things worth recording:
     personal data and secrets.** The name list lives outside the repository and
     `scripts/check-no-secrets.sh` reads it from there; the checker itself is
     generic and contains no names.
+15. **The site's own generated sizes stay in scope.** web-a's `static/img` holds
+    not only the yearly originals but the site's derived variants (`normal-b`,
+    `normal-b@2x`, `square128`, `square280`, `fb`, `thumb` and their `-nc`
+    siblings): 291,800 files, 26 GB. Measured 2026-11-11 they are 61% of that
+    tree's manifest rows and 17% of its savings (6.2 GiB), against 33,700 rows
+    that settle as rejected. The site still adds ~250 uploads a month, ~1,500 new
+    variants, worth roughly 0.5 GB a year. Excluding them would save one or two
+    minutes of the nightly scan and forfeit that, so they stay.
 
 ## Open items
 
@@ -145,25 +158,24 @@ Two other things worth recording:
    a permanently broken upload will warn forever. Marking a decode failure as
    settled, the way a rejection is settled, would keep the nightly report clean.
    Documented in `operations.md` as intended behaviour for now.
-3. **The manifest grows without bound in principle.** Roughly 350 bytes per row,
-   so a million-file host is a 350 MB database. Fine today; worth a pruning
-   policy (drop rows for files that have not been seen for a year) before it
-   reaches a million.
-4. **Thumbnail trees on web-a are still processed** (`min_file_size` 5120 there).
-   51,000 rejections on those trees so far. Deliberately kept: the owner wanted
-   to see whether anything can be won there before excluding them.
-5. **JPEG XL archive pilot** (phase 7) and a **deploy webhook for the site
+3. **The manifest keeps growing.** Roughly 500 bytes per row: 349 MB for 709,000
+   rows on web-a, 264 MB on web-c. Most of that is the fast-path cache for files
+   that are settled and will never change again, so pruning saves time at the
+   cost of a re-probe later. There is no last-seen column — the fast path
+   deliberately does not write, so `ts` is the decision time, not the last
+   sighting — and rows of files that were deleted cannot be told apart from
+   healthy settled rows. Worth a design decision before the largest host passes a
+   gigabyte.
+4. **JPEG XL archive pilot** (phase 7) and a **deploy webhook for the site
    generator** (phase 8) are designed but not started.
 
 ## Next step
 
 1. Item 2: settle a file that fails to decode, so the nightly `errors=` line only
    shows new problems.
-2. Item 4: decide whether the thumbnail trees on web-a stay in scope. The owner
-   wanted to see whether anything can be won there; 51,000 rejections later, the
-   answer is probably no.
-3. Item 3: add the manifest pruning policy before any host approaches a million
-   files. The JPEG XL pilot and the deploy webhook (item 5) stay deferred.
+2. Item 3: design the manifest pruning policy — with the measured growth rate
+   from the snapshot above, and the caveat that a pruned row costs a re-probe.
+3. Item 4: the JPEG XL pilot and the deploy webhook stay deferred.
 
 ## How to check the current state
 
