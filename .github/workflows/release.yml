@@ -1,46 +1,37 @@
 name: Release
 
-# Build and publish the multi-arch image to GHCR.
+# Build and publish the image to GHCR on purpose, not on every push.
 #
-#   push to main  ->  ghcr.io/hansvaneijsden/media-optimizer:sha-<short> and :latest
-#   tag v*        ->  ...:1.2.3, ...:1.2 and ...:sha-<short> (no latest)
+#   tag v*           ->  ghcr.io/hansvaneijsden/media-optimizer:1.2.3 and :1.2
+#   manual dispatch  ->  the tags for that ref; choose the platforms
+#
+# A push to main builds nothing here: CI already builds and smoke-tests the
+# amd64 image on every code change, and the deployment hosts consume a pinned
+# sha tag. An automatic release build would only spend 20-30 minutes of runner
+# time (arm64 is emulated) for an image nobody pulls yet. Publish when a rollout
+# is actually planned:
+#
+#   gh workflow run release.yml
+#   gh workflow run release.yml -f platforms=linux/amd64,linux/arm64
+#
+# Platforms: the default is linux/amd64 because every deployment target is
+# amd64. linux/arm64 runs under QEMU on the amd64 runner, compiles mozjpeg and
+# libvips from source, and has hung once (45 minutes in the rust stage without
+# progress), so it is opt-in.
 #
 # After the push, optionally POST to a deployment webhook so a managed
 # deployment platform can pull the new image. The URL lives in the repository
 # secret DEPLOY_WEBHOOK_URL and is never echoed.
-#
-# Multi-arch note: linux/arm64 is emulated on the amd64 runner (QEMU), and the
-# image compiles mozjpeg and libvips from source, so this job is slow. The GHA
-# cache is shared with the CI docker job, which builds linux/amd64 only.
-#
-# The emulated arm64 build has hung once (a release run sat in the rust-build
-# stage for 45 minutes without output). The manual trigger therefore takes a
-# `platforms` input: dispatch with linux/amd64 to publish for the amd64 hosts
-# while the arm64 build is retried later. A normal push still builds both.
 
 on:
   push:
-    branches: [main]
     tags: ["v*"]
-    # Build only when something that ends up inside the image changed. Editing
-    # documentation or a deployment example must not spend a two-architecture
-    # build: mozjpeg and libvips are compiled from source here.
-    #
-    # Note: GitHub applies `paths` to tag pushes too, so a release tag whose
-    # commit touches no listed path is skipped. Use the manual trigger below for
-    # that case.
-    paths:
-      - 'src/**'
-      - 'Cargo.toml'
-      - 'Cargo.lock'
-      - 'deploy/Dockerfile'
-      - '.dockerignore'
   workflow_dispatch:
     inputs:
       platforms:
-        description: 'target platforms (linux/amd64,linux/arm64 or linux/amd64)'
+        description: 'target platforms; arm64 is emulated and slow, the default is amd64 only'
         required: false
-        default: 'linux/amd64,linux/arm64'
+        default: 'linux/amd64'
         type: string
 
 permissions:
@@ -69,7 +60,8 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - name: Set up QEMU (for linux/arm64)
+      - name: Set up QEMU (only when arm64 is requested)
+        if: contains(inputs.platforms || 'linux/amd64', 'arm64')
         uses: docker/setup-qemu-action@v3
         with:
           platforms: arm64
@@ -105,7 +97,7 @@ jobs:
         with:
           context: .
           file: deploy/Dockerfile
-          platforms: ${{ inputs.platforms || 'linux/amd64,linux/arm64' }}
+          platforms: ${{ inputs.platforms || 'linux/amd64' }}
           push: true
           tags: ${{ steps.meta.outputs.tags }}
           labels: ${{ steps.meta.outputs.labels }}

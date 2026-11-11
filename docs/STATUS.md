@@ -62,12 +62,13 @@ what new uploads add.
   times the speed of the server itself; the script is
   `scripts/mediaopt-remote.sh`.
 - **Delivery.** Multi-stage Dockerfile, non-root, read-only root filesystem,
-  all capabilities dropped, per-host compose file. CI runs `fmt`, `clippy` and
-  the tests (74 unit, 11 integration); the release workflow builds only when
-  code, the Dockerfile or the Cargo manifests change, so a documentation commit
-  never produces an image. It builds amd64 and emulated arm64; a manual
-  `platforms` input publishes amd64-only when the arm64 build stalls, which it
-  did once on 2026-11-11 (45 minutes in the rust stage, no progress).
+  all capabilities dropped, per-host compose file. CI runs `fmt`, `clippy`, the
+  tests (74 unit, 11 integration) and an amd64 image build with smoke tests on
+  every change that can affect the binary; documentation and workflow-only
+  commits run nothing. The image is published only on a `v*` tag or a manual
+  `gh workflow run release.yml`, amd64 by default — arm64 is emulated, slow and
+  opt-in, and stalled once (45 minutes in the rust stage without progress, on
+  2026-11-11).
 
 ## Results so far
 

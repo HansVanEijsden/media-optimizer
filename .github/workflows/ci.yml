@@ -12,11 +12,14 @@ name: CI
 on:
   push:
     branches: [main]
-    # Documentation and metadata changes do not change the binary, so they must
-    # not spend a matrix of runners.
+    # Documentation, metadata and workflow-only changes do not change the
+    # binary, so they must not spend a matrix of runners. A workflow edit is
+    # validated by GitHub when it is pushed and exercised by the next code
+    # change.
     paths-ignore:
       - '**.md'
       - 'docs/**'
+      - '.github/**'
       - 'LICENSE-*'
       - '.gitignore'
       - '.dockerignore'
@@ -24,6 +27,7 @@ on:
     paths-ignore:
       - '**.md'
       - 'docs/**'
+      - '.github/**'
       - 'LICENSE-*'
 
 permissions:
